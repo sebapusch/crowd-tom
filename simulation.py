@@ -1,8 +1,13 @@
+from random import random
+
 import pygame
 import numpy as np
 from agent import Agent
 from environment import Environment
 from exit import Exit
+from obstacle import Obstacle, Wall, Circle
+
+Point = tuple[float, float]
 
 width = 900
 height = 900
@@ -18,25 +23,39 @@ screen = pygame.display.set_mode((width, height))
 clock = pygame.time.Clock()
 
 environment = Environment(room_width, room_height)
-environment.add_exit(Exit((6.8, 0), (8.2, 0)))
-environment.add_agent(Agent(
-    idx=0,
-    mass=1.0,
-    radius=0.2,
-    pos=np.array((4.0, 7.0)),
-    vel=np.zeros(2),
-    des_speed=0.0,
-    des_dir=np.zeros(2),
-    tau=1.0,
-))
+environment.add_exit(Exit((6.0, 0), (8.0, 0)))
 
-def draw_environment():
+for i in range(20):
+    agent_pos = np.array([random() * 15, random() * 15])
+
+    environment.add_agent(Agent(
+        social_repulsion=(2e3, 0.08),
+        idx=i,
+        mass=1.0,
+        radius=0.3,
+        position=agent_pos,
+        velocity=np.zeros(2),
+        desired_speed=np.float32(2.0),
+        desired_direction=np.zeros(2),
+        tau=1.0,
+    ))
+
+
+environment.add_obstacle(Wall((0, 0), (0, 15)))
+environment.add_obstacle(Wall((0, 0), (6, 0)))
+environment.add_obstacle(Wall((8, 0), (15, 0)))
+environment.add_obstacle(Wall((15, 15), (0, 15)))
+environment.add_obstacle(Wall((15, 15), (15, 0)))
+
+def draw_environment() -> None:
     pygame.draw.rect(screen, (255, 255, 255), (0, 0, width, height))
     wall_width = 12
-    pygame.draw.line(screen, (0, 0, 0), (0, 0), (width, 0), wall_width)
-    pygame.draw.line(screen, (0, 0, 0), (width, 0), (width, height), wall_width)
-    pygame.draw.line(screen, (0, 0, 0), (width, height), (0, height), wall_width)
-    pygame.draw.line(screen, (0, 0, 0), (0, height), (0, 0), wall_width)
+
+    for obj in environment.obstacles:
+        if isinstance(obj, Wall):
+            pygame.draw.line(screen, (0, 0, 0), obj.start * scale, obj.end * scale, wall_width)
+        elif isinstance(obj, Circle):
+            pygame.draw.circle(screen, (0, 0, 0), obj.center, obj.radius, wall_width)
 
 
 def draw_exit(screen, start, end):
@@ -45,14 +64,39 @@ def draw_exit(screen, start, end):
 
 def draw_agent(screen, position):
     x, y = position
-    pygame.draw.circle(screen, (0, 0, 255), (int(x * scale), int(y * scale)), 5)
+    pygame.draw.circle(screen, (0, 0, 255), (int(x * scale), int(y * scale)), max(1, int(agent.radius * scale)))
 
 
+fps = 60
+
+timesteps = 0
 running = True
+
+time_scale = 0.5
+
 while running:
+    dt = (clock.tick(fps) / 1000) * time_scale
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+
+
+    for agent in environment.agents:
+        agent.tick_acceleration(environment)
+
+    remaining_agents = []
+    for agent in environment.agents:
+        previous_position = agent.position.copy()
+        agent.tick_position(dt)
+
+        if not any(
+            exit_position.is_crossed(previous_position, agent.position)
+            for exit_position in environment.exits
+        ):
+            remaining_agents.append(agent)
+
+    environment.agents = remaining_agents
 
     draw_environment()
 
@@ -60,10 +104,9 @@ while running:
         draw_exit(screen, exit_position.start, exit_position.end)
 
     for agent in environment.agents:
-        draw_agent(screen, agent.pos)
+        draw_agent(screen, agent.position)
 
     pygame.display.flip()
-    clock.tick(60)
+    timesteps += 1
 
 pygame.quit()
-
