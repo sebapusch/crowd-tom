@@ -57,7 +57,7 @@ class Agent:
 
         for i, ex in enumerate(env.exits):
             distance = ex.distance_to(self)
-            if min_distance is None or distance.distance > min_distance:
+            if min_distance is None or distance.distance < min_distance.distance:
                 min_distance = distance
 
         if min_distance is None: return
