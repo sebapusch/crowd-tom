@@ -1,5 +1,5 @@
 from random import random
-from time import sleep
+from typing import Callable
 
 import pygame
 import numpy as np
@@ -42,7 +42,7 @@ def build_environment() -> Environment:
     environment.add_obstacle(Wall((20, 20), (0, 20)))
     environment.add_obstacle(Wall((20, 20), (20, 0)))
 
-    for i in range(30):
+    for i in range(50):
         agent_pos = np.array([random() * 20, random() * 20])
 
         environment.add_agent(Agent(
@@ -106,9 +106,10 @@ def update(environment: Environment, dt: float) -> None:
 
 
 def run_simulation(
-        environment: Environment,
+        reset: Callable[[], Environment],
         fps: int,
 ) -> None:
+    environment = reset()
 
     scale = WINDOW_SIZE[0] / environment.width
 
@@ -134,7 +135,7 @@ def run_simulation(
                 if event.key == pygame.K_SPACE:
                     paused = not paused
                 elif event.key == pygame.K_r:
-                    environment = build_environment()
+                    environment = reset()
                     draw(screen, environment, scale, time_scale)
                 elif event.key == pygame.K_MINUS:
                     time_scale = max(0.1, time_scale - 0.1)
@@ -158,8 +159,7 @@ def run_simulation(
     pygame.quit()
 
 def main():
-    environment = build_environment()
-    run_simulation(environment, fps=60)
+    run_simulation(build_environment, fps=60)
 
 if __name__ == '__main__':
     main()
