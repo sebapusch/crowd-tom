@@ -12,21 +12,28 @@ Point = tuple[float, float]
 width = 900
 height = 900
 
-room_width = 15
-room_height = 15
+room_width = 20
+room_height = 20
 
 scale = width / room_width
 
 pygame.init()
 screen = pygame.display.set_mode((width, height))
-
 clock = pygame.time.Clock()
 
-environment = Environment(room_width, room_height)
-environment.add_exit(Exit((6.0, 0), (8.0, 0)))
 
-for i in range(20):
-    agent_pos = np.array([random() * 15, random() * 15])
+environment = Environment(room_width, room_height)
+
+environment.add_exit(Exit((10.0, 0), (12.0, 0)))
+
+environment.add_obstacle(Wall((0, 0), (0, 20)))
+environment.add_obstacle(Wall((0, 0), (10, 0)))
+environment.add_obstacle(Wall((12, 0), (20, 0)))
+environment.add_obstacle(Wall((20, 20), (0, 20)))
+environment.add_obstacle(Wall((20, 20), (20, 0)))
+
+for i in range(30):
+    agent_pos = np.array([random() * 20, random() * 20])
 
     environment.add_agent(Agent(
         social_repulsion=(2e3, 0.08),
@@ -40,13 +47,6 @@ for i in range(20):
         tau=1.0,
     ))
 
-
-environment.add_obstacle(Wall((0, 0), (0, 15)))
-environment.add_obstacle(Wall((0, 0), (6, 0)))
-environment.add_obstacle(Wall((8, 0), (15, 0)))
-environment.add_obstacle(Wall((15, 15), (0, 15)))
-environment.add_obstacle(Wall((15, 15), (15, 0)))
-
 def draw_environment() -> None:
     pygame.draw.rect(screen, (255, 255, 255), (0, 0, width, height))
     wall_width = 12
@@ -55,7 +55,7 @@ def draw_environment() -> None:
         if isinstance(obj, Wall):
             pygame.draw.line(screen, (0, 0, 0), obj.start * scale, obj.end * scale, wall_width)
         elif isinstance(obj, Circle):
-            pygame.draw.circle(screen, (0, 0, 0), obj.center, obj.radius, wall_width)
+            pygame.draw.circle(screen, (0, 0, 0), obj.center * scale, obj.radius * scale, wall_width)
 
 
 def draw_exit(screen, start, end):
@@ -72,7 +72,7 @@ fps = 60
 timesteps = 0
 running = True
 
-time_scale = 0.5
+time_scale = 1.0
 
 while running:
     dt = (clock.tick(fps) / 1000) * time_scale
@@ -81,14 +81,13 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
-
     for agent in environment.agents:
-        agent.tick_acceleration(environment)
+        agent.update_acceleration(environment)
 
     remaining_agents = []
     for agent in environment.agents:
         previous_position = agent.position.copy()
-        agent.tick_position(dt)
+        agent.update_position(dt)
 
         if not any(
             exit_position.is_crossed(previous_position, agent.position)

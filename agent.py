@@ -37,22 +37,22 @@ class Agent:
         self.desired_direction = desired_direction
         self.acceleration = 0
 
-    def tick_acceleration(self, env: Environment) -> None:
-        self.update_desired(env)
+    def update_acceleration(self, env: Environment) -> None:
+        self.update_desired_direction(env)
 
         f_drive = self.mass * (self.desired_speed * self.desired_direction - self.velocity) / self.tau
         f_other = self.compute_social_force(env.agents)
         f_obst = self.compute_obstacle_force(env.obstacles)
 
-        f = f_drive + f_other + f_obst
+        force = f_drive + f_other + f_obst
 
-        self.acceleration = f / self.mass
+        self.acceleration = force / self.mass
 
-    def tick_position(self, dt: float) -> None:
+    def update_position(self, dt: float) -> None:
         self.velocity += self.acceleration * dt
         self.position += self.velocity * dt
 
-    def update_desired(self, env: Environment) -> None:
+    def update_desired_direction(self, env: Environment) -> None:
         min_distance = None
 
         for i, ex in enumerate(env.exits):
