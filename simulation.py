@@ -1,7 +1,10 @@
 from random import random
+from time import sleep
 
 import pygame
 import numpy as np
+from pygame.surface import SurfaceType
+
 from agent import Agent
 from environment import Environment
 from exit import Exit
@@ -9,78 +12,82 @@ from obstacle import Obstacle, Wall, Circle
 
 Point = tuple[float, float]
 
-width = 900
-height = 900
+WALL_WIDTH = 20
+EXIT_WIDTH = int(WALL_WIDTH * 1.5)
 
-room_width = 20
-room_height = 20
+WINDOW_SIZE = (1000, 1000)
 
-scale = width / room_width
+COLORS = {
+    'agent': (0, 0, 255),
+    'exit': (0, 255, 0),
+    'wall': (0, 0, 0),
+    'text': (0, 0, 0),
+    'background': (255, 255, 255),
+}
 
-pygame.init()
-screen = pygame.display.set_mode((width, height))
-clock = pygame.time.Clock()
+SPACEBAR_KEY = 32
+
+pygame.font.init()
+FONT = pygame.font.SysFont('Comic Sans MS', 30)
 
 
-environment = Environment(room_width, room_height)
+def build_environment() -> Environment:
+    environment = Environment(20, 20)
 
-environment.add_exit(Exit((10.0, 0), (12.0, 0)))
+    environment.add_exit(Exit((10.0, 0), (12.0, 0)))
 
-environment.add_obstacle(Wall((0, 0), (0, 20)))
-environment.add_obstacle(Wall((0, 0), (10, 0)))
-environment.add_obstacle(Wall((12, 0), (20, 0)))
-environment.add_obstacle(Wall((20, 20), (0, 20)))
-environment.add_obstacle(Wall((20, 20), (20, 0)))
+    environment.add_obstacle(Wall((0, 0), (0, 20)))
+    environment.add_obstacle(Wall((0, 0), (10, 0)))
+    environment.add_obstacle(Wall((12, 0), (20, 0)))
+    environment.add_obstacle(Wall((20, 20), (0, 20)))
+    environment.add_obstacle(Wall((20, 20), (20, 0)))
 
-for i in range(30):
-    agent_pos = np.array([random() * 20, random() * 20])
+    for i in range(30):
+        agent_pos = np.array([random() * 20, random() * 20])
 
-    environment.add_agent(Agent(
-        social_repulsion=(2e3, 0.08),
-        idx=i,
-        mass=1.0,
-        radius=0.3,
-        position=agent_pos,
-        velocity=np.zeros(2),
-        desired_speed=np.float32(2.0),
-        desired_direction=np.zeros(2),
-        tau=1.0,
-    ))
+        environment.add_agent(Agent(
+            social_repulsion=(2e3, 0.08),
+            idx=i,
+            mass=1.0,
+            radius=0.3,
+            position=agent_pos,
+            velocity=np.zeros(2),
+            desired_speed=np.float32(2.0),
+            desired_direction=np.zeros(2),
+            tau=1.0,
+        ))
 
-def draw_environment() -> None:
-    pygame.draw.rect(screen, (255, 255, 255), (0, 0, width, height))
-    wall_width = 12
+    return environment
+
+def draw(
+        screen: SurfaceType,
+        environment: Environment,
+        scale: float,
+        time_scale: float,
+) -> None:
+    pygame.draw.rect(screen, COLORS['background'], (0, 0, WINDOW_SIZE[0], WINDOW_SIZE[1]))
+
+    text_scale = FONT.render(f'x{time_scale:.2f}', False, COLORS['text'])
+    text_agent = FONT.render(f'number of agents: {len(environment.agents)}', False, COLORS['text'])
+    screen.blit(text_scale, (20, 20))
+    screen.blit(text_agent, (20, 50))
+
 
     for obj in environment.obstacles:
         if isinstance(obj, Wall):
-            pygame.draw.line(screen, (0, 0, 0), obj.start * scale, obj.end * scale, wall_width)
+            pygame.draw.line(screen, COLORS['wall'], obj.start * scale, obj.end * scale, WALL_WIDTH)
         elif isinstance(obj, Circle):
-            pygame.draw.circle(screen, (0, 0, 0), obj.center * scale, obj.radius * scale, wall_width)
+            pygame.draw.circle(screen, COLORS['wall'], obj.center * scale, obj.radius * scale, WALL_WIDTH)
+
+    for ext in environment.exits:
+        pygame.draw.line(screen, COLORS['exit'], ext.start * scale, ext.end * scale, EXIT_WIDTH)
+
+    for agent in environment.agents:
+        x, y = agent.position
+        pygame.draw.circle(screen, COLORS['agent'], (int(x * scale), int(y * scale)), max(1, int(agent.radius * scale)))
 
 
-def draw_exit(screen, start, end):
-    pygame.draw.line(screen, (0, 255, 0), start * scale, end * scale, 20)
-
-
-def draw_agent(screen, position):
-    x, y = position
-    pygame.draw.circle(screen, (0, 0, 255), (int(x * scale), int(y * scale)), max(1, int(agent.radius * scale)))
-
-
-fps = 60
-
-timesteps = 0
-running = True
-
-time_scale = 1.0
-
-while running:
-    dt = (clock.tick(fps) / 1000) * time_scale
-
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-
+def update(environment: Environment, dt: float) -> None:
     for agent in environment.agents:
         agent.update_acceleration(environment)
 
@@ -90,22 +97,69 @@ while running:
         agent.update_position(dt)
 
         if not any(
-            exit_position.is_crossed(previous_position, agent.position)
-            for exit_position in environment.exits
+                exit_position.is_crossed(previous_position, agent.position)
+                for exit_position in environment.exits
         ):
             remaining_agents.append(agent)
 
     environment.agents = remaining_agents
 
-    draw_environment()
 
-    for exit_position in environment.exits:
-        draw_exit(screen, exit_position.start, exit_position.end)
+def run_simulation(
+        environment: Environment,
+        fps: int,
+) -> None:
 
-    for agent in environment.agents:
-        draw_agent(screen, agent.position)
+    scale = WINDOW_SIZE[0] / environment.width
 
-    pygame.display.flip()
-    timesteps += 1
+    pygame.init()
+    screen = pygame.display.set_mode(WINDOW_SIZE)
+    clock = pygame.time.Clock()
 
-pygame.quit()
+    time_scale = 1.0
+    timesteps = 0
+    running = True
+    dt = 1.0 / 60
+    accumulator = 0.0
+    paused = False
+
+    while running:
+        frame_time = min(clock.tick(fps) / 1000.0, 0.25)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    paused = not paused
+                elif event.key == pygame.K_r:
+                    environment = build_environment()
+                    draw(screen, environment, scale, time_scale)
+                elif event.key == pygame.K_MINUS:
+                    time_scale = max(0.1, time_scale - 0.1)
+                elif event.key == pygame.K_PLUS:
+                    time_scale = min(2, time_scale + 0.1)
+
+        if paused:
+            continue
+
+        accumulator += frame_time * time_scale
+
+        while accumulator >= dt:
+            update(environment, dt)
+            timesteps += 1
+            accumulator -= dt
+
+        draw(screen, environment, scale, time_scale)
+
+        pygame.display.flip()
+
+    pygame.quit()
+
+def main():
+    environment = build_environment()
+    run_simulation(environment, fps=60)
+
+if __name__ == '__main__':
+    main()
