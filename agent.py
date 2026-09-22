@@ -1,9 +1,11 @@
 from __future__ import annotations
+
+from math import log
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from environment import Environment
+from environment import Environment, F_CUT
 from exit import Exit
 
 if TYPE_CHECKING:
@@ -41,7 +43,7 @@ class Agent:
         self.update_desired_direction(env)
 
         f_drive = self.mass * (self.desired_speed * self.desired_direction - self.velocity) / self.tau
-        f_other = self.compute_social_force(env.agents)
+        f_other = self.compute_social_force(env.get_visible_agents(self))
         f_obst = self.compute_obstacle_force(env.obstacles)
 
         force = f_drive + f_other + f_obst
@@ -74,12 +76,19 @@ class Agent:
             displacement = self.position - other.position
             distance = np.linalg.norm(displacement)
 
-            if distance < MIN_DIST: continue
+            if distance < MIN_DIST:
+                continue
+
+            combined_radius = self.radius + other.radius
+            A, B = self.social_repulsion
+
+            # MIN FORCE
+            if distance >= combined_radius - B * log(F_CUT / A):
+                continue
 
             normal_ij = displacement / distance
             tangent_ij = np.array([-normal_ij[1], normal_ij[0]])
 
-            combined_radius = self.radius + other.radius
             overlap = max(0.0, combined_radius - distance)
 
             A, B = self.social_repulsion

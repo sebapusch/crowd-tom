@@ -22,6 +22,7 @@ COLORS = {
     'exit': (0, 255, 0),
     'wall': (0, 0, 0),
     'text': (0, 0, 0),
+    'debug': (255, 0, 0),
     'background': (255, 255, 255),
 }
 
@@ -32,20 +33,11 @@ FONT = pygame.font.SysFont('Comic Sans MS', 30)
 
 
 def build_environment() -> Environment:
-    environment = Environment(20, 20)
+    agents = []
+    for i in range(400):
+        agent_pos = np.array([random() * 100, random() * 100])
 
-    environment.add_exit(Exit((10.0, 0), (12.0, 0)))
-
-    environment.add_obstacle(Wall((0, 0), (0, 20)))
-    environment.add_obstacle(Wall((0, 0), (10, 0)))
-    environment.add_obstacle(Wall((12, 0), (20, 0)))
-    environment.add_obstacle(Wall((20, 20), (0, 20)))
-    environment.add_obstacle(Wall((20, 20), (20, 0)))
-
-    for i in range(50):
-        agent_pos = np.array([random() * 20, random() * 20])
-
-        environment.add_agent(Agent(
+        agents.append(Agent(
             social_repulsion=(2e3, 0.08),
             idx=i,
             mass=1.0,
@@ -57,6 +49,16 @@ def build_environment() -> Environment:
             tau=1.0,
         ))
 
+    environment = Environment(100, 100, agents)
+
+    environment.add_exit(Exit((50.0, 0), (53.0, 0)))
+
+    environment.add_obstacle(Wall((0, 0), (0, 100)))
+    environment.add_obstacle(Wall((0, 0), (50, 0)))
+    environment.add_obstacle(Wall((53, 0), (100, 0)))
+    environment.add_obstacle(Wall((100, 100), (0, 100)))
+    environment.add_obstacle(Wall((100, 100), (100, 0)))
+
     return environment
 
 def draw(
@@ -64,6 +66,7 @@ def draw(
         environment: Environment,
         scale: float,
         time_scale: float,
+        debug: bool,
 ) -> None:
     pygame.draw.rect(screen, COLORS['background'], (0, 0, WINDOW_SIZE[0], WINDOW_SIZE[1]))
 
@@ -86,23 +89,14 @@ def draw(
         x, y = agent.position
         pygame.draw.circle(screen, COLORS['agent'], (int(x * scale), int(y * scale)), max(1, int(agent.radius * scale)))
 
+    if debug:
+        for i in range(int(environment.width / environment._cell_size) + 1):
+            x = i * environment._cell_size * scale
+            pygame.draw.line(screen, COLORS['debug'], (x, 0), (x, environment.height * scale))
 
-def update(environment: Environment, dt: float) -> None:
-    for agent in environment.agents:
-        agent.update_acceleration(environment)
-
-    remaining_agents = []
-    for agent in environment.agents:
-        previous_position = agent.position.copy()
-        agent.update_position(dt)
-
-        if not any(
-                exit_position.is_crossed(previous_position, agent.position)
-                for exit_position in environment.exits
-        ):
-            remaining_agents.append(agent)
-
-    environment.agents = remaining_agents
+        for i in range(int(environment.height / environment._cell_size) + 1):
+            y = i * environment._cell_size * scale
+            pygame.draw.line(screen, COLORS['debug'], (0, y), (environment.width * scale, y))
 
 
 def run_simulation(
@@ -123,6 +117,7 @@ def run_simulation(
     dt = 1.0 / 60
     accumulator = 0.0
     paused = False
+    debug = True
 
     while running:
         frame_time = min(clock.tick(fps) / 1000.0, 0.25)
@@ -136,11 +131,13 @@ def run_simulation(
                     paused = not paused
                 elif event.key == pygame.K_r:
                     environment = reset()
-                    draw(screen, environment, scale, time_scale)
+                    draw(screen, environment, scale, time_scale, debug)
                 elif event.key == pygame.K_MINUS:
                     time_scale = max(0.1, time_scale - 0.1)
                 elif event.key == pygame.K_PLUS:
                     time_scale = min(2, time_scale + 0.1)
+                elif event.key == pygame.K_d:
+                    debug = not debug
 
         if paused:
             continue
@@ -148,11 +145,11 @@ def run_simulation(
         accumulator += frame_time * time_scale
 
         while accumulator >= dt:
-            update(environment, dt)
+            environment.tick(dt)
             timesteps += 1
             accumulator -= dt
 
-        draw(screen, environment, scale, time_scale)
+        draw(screen, environment, scale, time_scale, debug)
 
         pygame.display.flip()
 
