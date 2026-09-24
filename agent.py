@@ -5,15 +5,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from environment import Environment, F_CUT
-from exit import Exit
+from environment import Environment, F_CUT, COMPRESSION_COEFF, SLIDING_COEFF, MIN_DIST
 
 if TYPE_CHECKING:
     from obstacle import Obstacle, Distance
-
-COMPRESSION_COEFF = 1.2e5
-SLIDING_COEFF = 2.4e5
-MIN_DIST = 1e-12
 
 
 

@@ -1,3 +1,9 @@
+import os
+
+# Disable Retina backing-store scaling so pygame is not filling 4x the pixels.
+os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "1")
+os.environ.setdefault("SDL_HINT_RENDER_SCALE_QUALITY", "0")
+
 from random import random
 from typing import Callable
 
@@ -8,7 +14,7 @@ from pygame.surface import SurfaceType
 from agent import Agent
 from environment import Environment
 from exit import Exit
-from obstacle import Obstacle, Wall, Circle
+from obstacle import Wall, Circle
 
 Point = tuple[float, float]
 
@@ -16,6 +22,7 @@ WALL_WIDTH = 20
 EXIT_WIDTH = int(WALL_WIDTH * 1.5)
 
 WINDOW_SIZE = (1000, 1000)
+MAX_PHYSICS_STEPS = 2
 
 COLORS = {
     'agent': (0, 0, 255),
@@ -26,16 +33,11 @@ COLORS = {
     'background': (255, 255, 255),
 }
 
-SPACEBAR_KEY = 32
-
-pygame.font.init()
-FONT = pygame.font.SysFont('Comic Sans MS', 30)
-
 
 def build_environment() -> Environment:
     agents = []
     for i in range(400):
-        agent_pos = np.array([random() * 100, random() * 100])
+        agent_pos = np.array([random() * 100, random() * 100], dtype=float)
 
         agents.append(Agent(
             social_repulsion=(2e3, 0.08),
@@ -61,20 +63,36 @@ def build_environment() -> Environment:
 
     return environment
 
+
+def _agent_sprite(radius_px: int) -> pygame.Surface:
+    size = max(2, radius_px * 2)
+    sprite = pygame.Surface((size, size), pygame.SRCALPHA)
+    pygame.draw.circle(sprite, COLORS['agent'], (size // 2, size // 2), radius_px)
+    return sprite
+
+
 def draw(
         screen: SurfaceType,
         environment: Environment,
         scale: float,
         time_scale: float,
         debug: bool,
+        font: pygame.font.Font,
+        agent_sprite: pygame.Surface,
+        label_cache: dict,
 ) -> None:
-    pygame.draw.rect(screen, COLORS['background'], (0, 0, WINDOW_SIZE[0], WINDOW_SIZE[1]))
+    screen.fill(COLORS['background'])
 
-    text_scale = FONT.render(f'x{time_scale:.2f}', False, COLORS['text'])
-    text_agent = FONT.render(f'number of agents: {len(environment.agents)}', False, COLORS['text'])
+    key = (f'{time_scale:.2f}', len(environment.agents))
+    if key not in label_cache:
+        label_cache.clear()
+        label_cache[key] = (
+            font.render(f'x{time_scale:.2f}', False, COLORS['text']),
+            font.render(f'number of agents: {len(environment.agents)}', False, COLORS['text']),
+        )
+    text_scale, text_agent = label_cache[key]
     screen.blit(text_scale, (20, 20))
     screen.blit(text_agent, (20, 50))
-
 
     for obj in environment.obstacles:
         if isinstance(obj, Wall):
@@ -85,9 +103,12 @@ def draw(
     for ext in environment.exits:
         pygame.draw.line(screen, COLORS['exit'], ext.start * scale, ext.end * scale, EXIT_WIDTH)
 
+    blit_pos = []
     for agent in environment.agents:
         x, y = agent.position
-        pygame.draw.circle(screen, COLORS['agent'], (int(x * scale), int(y * scale)), max(1, int(agent.radius * scale)))
+        blit_pos.append(agent_sprite.get_rect(center=(x * scale, y * scale)))
+    if blit_pos:
+        screen.blits([(agent_sprite, rect) for rect in blit_pos])
 
     if debug:
         for i in range(int(environment.width / environment._cell_size) + 1):
@@ -108,8 +129,13 @@ def run_simulation(
     scale = WINDOW_SIZE[0] / environment.width
 
     pygame.init()
-    screen = pygame.display.set_mode(WINDOW_SIZE)
+    pygame.font.init()
+    font = pygame.font.SysFont('Comic Sans MS', 30)
+    screen = pygame.display.set_mode(WINDOW_SIZE, pygame.DOUBLEBUF, vsync=0)
     clock = pygame.time.Clock()
+    agent_radius_px = max(1, int(environment.agents[0].radius * scale)) if environment.agents else 1
+    sprite = _agent_sprite(agent_radius_px)
+    label_cache: dict = {}
 
     time_scale = 1.0
     timesteps = 0
@@ -117,10 +143,10 @@ def run_simulation(
     dt = 1.0 / 60
     accumulator = 0.0
     paused = False
-    debug = True
+    debug = False
 
     while running:
-        frame_time = min(clock.tick(fps) / 1000.0, 0.25)
+        frame_time = min(clock.tick(fps) / 1000.0, 0.05)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -131,7 +157,8 @@ def run_simulation(
                     paused = not paused
                 elif event.key == pygame.K_r:
                     environment = reset()
-                    draw(screen, environment, scale, time_scale, debug)
+                    label_cache.clear()
+                    draw(screen, environment, scale, time_scale, debug, font, sprite, label_cache)
                 elif event.key == pygame.K_MINUS:
                     time_scale = max(0.1, time_scale - 0.1)
                 elif event.key == pygame.K_PLUS:
@@ -139,18 +166,18 @@ def run_simulation(
                 elif event.key == pygame.K_d:
                     debug = not debug
 
-        if paused:
-            continue
+        if not paused:
+            accumulator += frame_time * time_scale
+            steps = 0
+            while accumulator >= dt and steps < MAX_PHYSICS_STEPS:
+                environment.tick(dt)
+                timesteps += 1
+                accumulator -= dt
+                steps += 1
+            if accumulator > dt:
+                accumulator = dt
 
-        accumulator += frame_time * time_scale
-
-        while accumulator >= dt:
-            environment.tick(dt)
-            timesteps += 1
-            accumulator -= dt
-
-        draw(screen, environment, scale, time_scale, debug)
-
+        draw(screen, environment, scale, time_scale, debug, font, sprite, label_cache)
         pygame.display.flip()
 
     pygame.quit()
