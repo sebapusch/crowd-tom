@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from obstacle import Obstacle
 
 from exit import Exit
+from perception import unit_rows, visible_exit_mask
 
 
 # Newtons
@@ -23,14 +24,29 @@ class Environment:
     """
     Agents must be passed in constructor as visibility size is computed once in __init__
     """
-    def __init__(self, width: int, height: int, agents: list[Agent]) -> None:
+    def __init__(
+            self,
+            width: int,
+            height: int,
+            agents: list[Agent],
+            view_range: float = 40.0,
+            fov_rad: float = 2.0 * np.pi,
+            wander_turn: float = 1.5,
+            speed_limit_factor: float = 1.5,
+    ) -> None:
         self.width = width
         self.height = height
         self.agents: list[Agent] = agents
         self.exits: list[Exit] = []
         self.obstacles: list[Obstacle] = []
+        self.view_range = view_range
+        self.fov_rad = fov_rad
+        self.wander_turn = wander_turn
+        self.speed_limit_factor = speed_limit_factor
+        self._rng = np.random.default_rng()
         self._grid = {}
         self._cell_size = self._compute_visibility()
+        self._seen_exits = np.zeros((len(agents), 0), dtype=bool)
         self._pack_agents()
 
     def add_exit(self, exit_: Exit) -> None:
@@ -53,7 +69,8 @@ class Environment:
         A = self._A
         B = self._B
 
-        desired_direction = self._desired_directions(pos)
+        desired_direction = self._desired_directions(pos, dt)
+        np.copyto(self._heading, desired_direction)
         f_drive = masses[:, None] * (desired_speeds[:, None] * desired_direction - vel) / taus[:, None]
         f_other = self._social_forces(pos, vel, radii, A, B)
         f_obst = self._obstacle_forces(pos, vel, radii, A, B)
@@ -61,6 +78,7 @@ class Environment:
         acceleration = (f_drive + f_other + f_obst) / masses[:, None]
         previous_position = pos.copy()
         vel += acceleration * dt
+        self._clip_speeds(vel, desired_speeds)
         pos += vel * dt
 
         crossed = np.zeros(n, dtype=bool)
@@ -73,6 +91,13 @@ class Environment:
         keep = ~crossed
         self.agents = [agent for agent, stayed in zip(self.agents, keep) if stayed]
         self._pack_agents()
+
+    def _clip_speeds(self, vel: np.ndarray, desired_speeds: np.ndarray) -> None:
+        speed = np.linalg.norm(vel, axis=1)
+        vmax = self.speed_limit_factor * desired_speeds
+        too_fast = speed > vmax
+        if np.any(too_fast):
+            vel[too_fast] *= (vmax[too_fast] / np.maximum(speed[too_fast], MIN_DIST))[:, None]
 
     def get_visible_agents(self, agent: Agent) -> list[Agent]:
         """
@@ -91,42 +116,95 @@ class Environment:
 
     def _pack_agents(self) -> None:
         n = len(self.agents)
-        self._pos = np.empty((n, 2), dtype=float)
-        self._vel = np.empty((n, 2), dtype=float)
-        self._radii = np.empty(n, dtype=float)
-        self._masses = np.empty(n, dtype=float)
-        self._taus = np.empty(n, dtype=float)
-        self._desired_speeds = np.empty(n, dtype=float)
-        self._A = np.empty(n, dtype=float)
-        self._B = np.empty(n, dtype=float)
-
+        if n == 0:
+            self._pos = np.empty((0, 2), dtype=float)
+            self._vel = np.empty((0, 2), dtype=float)
+            self._radii = np.empty(0, dtype=float)
+            self._masses = np.empty(0, dtype=float)
+            self._taus = np.empty(0, dtype=float)
+            self._desired_speeds = np.empty(0, dtype=float)
+            self._A = np.empty(0, dtype=float)
+            self._B = np.empty(0, dtype=float)
+            self._heading = np.empty((0, 2), dtype=float)
+            self._seen_exits = np.zeros((0, len(self.exits)), dtype=bool)
+            return
+        self._pos = np.array([agent.position for agent in self.agents], dtype=float)
+        self._vel = np.array([agent.velocity for agent in self.agents], dtype=float)
+        self._radii = np.array([agent.radius for agent in self.agents], dtype=float)
+        self._masses = np.array([agent.mass for agent in self.agents], dtype=float)
+        self._taus = np.array([agent.tau for agent in self.agents], dtype=float)
+        self._desired_speeds = np.array([agent.desired_speed for agent in self.agents], dtype=float)
+        repulsion = np.array([agent.social_repulsion for agent in self.agents], dtype=float)
+        self._A = repulsion[:, 0]
+        self._B = repulsion[:, 1]
+        headings = np.array([agent.desired_direction for agent in self.agents], dtype=float)
+        heading_norm = np.linalg.norm(headings, axis=1, keepdims=True)
+        bad = heading_norm[:, 0] < MIN_DIST
+        headings = headings / np.maximum(heading_norm, MIN_DIST)
+        headings[bad] = np.array([1.0, 0.0])
+        self._heading = headings
         for i, agent in enumerate(self.agents):
-            self._pos[i] = agent.position
-            self._vel[i] = agent.velocity
-            self._radii[i] = agent.radius
-            self._masses[i] = agent.mass
-            self._taus[i] = agent.tau
-            self._desired_speeds[i] = agent.desired_speed
-            self._A[i], self._B[i] = agent.social_repulsion
             agent.position = self._pos[i]
             agent.velocity = self._vel[i]
+            agent.desired_direction = self._heading[i]
+        self._seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
 
-    def _desired_directions(self, pos: np.ndarray) -> np.ndarray:
+    def _desired_directions(self, pos: np.ndarray, dt: float) -> np.ndarray:
         n = len(pos)
         if not self.exits:
-            return np.zeros((n, 2))
+            return self._heading.copy()
 
+        look = self._heading
         best_distance = np.full(n, np.inf)
         best_closest = np.zeros((n, 2))
-        for exit_position in self.exits:
+        seen_any = np.zeros(n, dtype=bool)
+        seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
+
+        for j, exit_position in enumerate(self.exits):
             query = exit_position.distances(pos)
-            closer = query.distance < best_distance
+            seen = visible_exit_mask(
+                pos,
+                look,
+                query.closest_point,
+                self.obstacles,
+                self.view_range,
+                self.fov_rad,
+            )
+            seen_exits[:, j] = seen
+            closer = seen & (query.distance < best_distance)
             best_distance = np.where(closer, query.distance, best_distance)
             best_closest = np.where(closer[:, None], query.closest_point, best_closest)
+            seen_any |= seen
+
+        self._seen_exits = seen_exits
 
         displacement = best_closest - pos
-        norm = np.linalg.norm(displacement, axis=1, keepdims=True)
-        return displacement / np.maximum(norm, MIN_DIST)
+        toward_exit = unit_rows(displacement)
+        fallback = self._follow_or_wander(pos, seen_any, dt)
+        return np.where(seen_any[:, None], toward_exit, fallback)
+
+    def _follow_or_wander(self, pos: np.ndarray, informed: np.ndarray, dt: float) -> np.ndarray:
+        n = len(pos)
+        turn = self._rng.normal(0.0, self.wander_turn * dt, size=n)
+        wander = self._rotate_headings(self._heading, turn)
+        if n < 2 or not np.any(informed):
+            return wander
+
+        offset = pos[None, :, :] - pos[:, None, :]
+        dist = np.linalg.norm(offset, axis=2)
+        np.fill_diagonal(dist, np.inf)
+        dist[:, ~informed] = np.inf
+        nearest = np.argmin(dist, axis=1)
+        can_follow = np.isfinite(dist[np.arange(n), nearest])
+        follow = unit_rows(pos[nearest] - pos)
+        return np.where(can_follow[:, None], follow, wander)
+
+    @staticmethod
+    def _rotate_headings(headings: np.ndarray, angles: np.ndarray) -> np.ndarray:
+        cos_a = np.cos(angles)
+        sin_a = np.sin(angles)
+        hx, hy = headings[:, 0], headings[:, 1]
+        return np.stack((cos_a * hx - sin_a * hy, sin_a * hx + cos_a * hy), axis=1)
 
     def _social_forces(
             self,

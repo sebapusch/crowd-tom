@@ -5,6 +5,7 @@ os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "1")
 os.environ.setdefault("SDL_HINT_RENDER_SCALE_QUALITY", "0")
 
 from random import random
+from math import cos, sin, pi
 from typing import Callable
 
 import pygame
@@ -14,7 +15,7 @@ from pygame.surface import SurfaceType
 from agent import Agent
 from environment import Environment
 from exit import Exit
-from obstacle import Wall, Circle
+from obstacle import Wall, Circle, Obstacle
 
 Point = tuple[float, float]
 
@@ -23,6 +24,103 @@ EXIT_WIDTH = int(WALL_WIDTH * 1.5)
 
 WINDOW_SIZE = (1000, 1000)
 MAX_PHYSICS_STEPS = 2
+VIEW_RANGE = 40.0
+FOV_DEG = 360.0
+EXIT_WIDTH_WORLD = 3.0
+AGENT_COUNT = 400
+AGENT_RADIUS = 0.3
+SPAWN_CLEARANCE = 0.05
+SPAWN_ATTEMPTS = 10_000
+
+
+def _position_is_free(
+        candidate: np.ndarray,
+        radius: float,
+        placed: np.ndarray,
+        obstacles: list[Obstacle],
+) -> bool:
+    min_gap = 2.0 * radius + SPAWN_CLEARANCE
+    if len(placed) > 0:
+        if np.min(np.linalg.norm(placed - candidate, axis=1)) < min_gap:
+            return False
+    for obstacle in obstacles:
+        if float(obstacle.distances(candidate).distance[0]) < radius + SPAWN_CLEARANCE:
+            return False
+    return True
+
+
+def _spawn_positions(
+        count: int,
+        radius: float,
+        width: float,
+        height: float,
+        obstacles: list[Obstacle],
+) -> np.ndarray:
+    margin = radius + SPAWN_CLEARANCE + 1.0
+    positions = np.empty((count, 2), dtype=float)
+    placed = 0
+    attempts = 0
+    max_attempts = SPAWN_ATTEMPTS * count
+    while placed < count:
+        if attempts >= max_attempts:
+            raise RuntimeError(f'Could not place agent {placed + 1} without overlap')
+        attempts += 1
+        candidate = np.array([
+            margin + random() * (width - 2.0 * margin),
+            margin + random() * (height - 2.0 * margin),
+        ], dtype=float)
+        if not _position_is_free(candidate, radius, positions[:placed], obstacles):
+            continue
+        positions[placed] = candidate
+        placed += 1
+    min_gap = 2.0 * radius + SPAWN_CLEARANCE
+    dist = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
+    np.fill_diagonal(dist, np.inf)
+    if dist.min() < min_gap:
+        raise RuntimeError(f'spawn overlap: min dist {dist.min()} < {min_gap}')
+    return positions
+
+
+def build_environment() -> Environment:
+    north = ((50.0, 0.0), (50.0 + EXIT_WIDTH_WORLD, 0.0))
+    south = ((50.0, 100.0), (50.0 + EXIT_WIDTH_WORLD, 100.0))
+    obstacles: list[Obstacle] = [
+        Wall((0, 0), (0, 100)),
+        Wall((0, 0), north[0]),
+        Wall(north[1], (100, 0)),
+        Wall((0, 100), south[0]),
+        Wall(south[1], (100, 100)),
+        Wall((100, 100), (100, 0)),
+    ]
+
+    agents = []
+    for i, agent_pos in enumerate(_spawn_positions(AGENT_COUNT, AGENT_RADIUS, 100, 100, obstacles)):
+        angle = random() * 2.0 * pi
+        agents.append(Agent(
+            social_repulsion=(2e3, 0.08),
+            idx=i,
+            mass=1.0,
+            radius=AGENT_RADIUS,
+            position=np.array(agent_pos, dtype=float, copy=True),
+            velocity=np.zeros(2, dtype=float),
+            desired_speed=np.float32(2.0),
+            desired_direction=np.array([cos(angle), sin(angle)], dtype=float),
+            tau=1.0,
+        ))
+
+    environment = Environment(
+        100,
+        100,
+        agents,
+        view_range=VIEW_RANGE,
+        fov_rad=np.deg2rad(FOV_DEG),
+    )
+    environment.add_exit(Exit(*north))
+    environment.add_exit(Exit(*south))
+    for obstacle in obstacles:
+        environment.add_obstacle(obstacle)
+
+    return environment
 
 COLORS = {
     'agent': (0, 0, 255),
@@ -30,38 +128,10 @@ COLORS = {
     'wall': (0, 0, 0),
     'text': (0, 0, 0),
     'debug': (255, 0, 0),
+    'fov': (0, 170, 255),
+    'seen': (0, 200, 120),
     'background': (255, 255, 255),
 }
-
-
-def build_environment() -> Environment:
-    agents = []
-    for i in range(400):
-        agent_pos = np.array([random() * 100, random() * 100], dtype=float)
-
-        agents.append(Agent(
-            social_repulsion=(2e3, 0.08),
-            idx=i,
-            mass=1.0,
-            radius=0.3,
-            position=agent_pos,
-            velocity=np.zeros(2),
-            desired_speed=np.float32(2.0),
-            desired_direction=np.zeros(2),
-            tau=1.0,
-        ))
-
-    environment = Environment(100, 100, agents)
-
-    environment.add_exit(Exit((50.0, 0), (53.0, 0)))
-
-    environment.add_obstacle(Wall((0, 0), (0, 100)))
-    environment.add_obstacle(Wall((0, 0), (50, 0)))
-    environment.add_obstacle(Wall((53, 0), (100, 0)))
-    environment.add_obstacle(Wall((100, 100), (0, 100)))
-    environment.add_obstacle(Wall((100, 100), (100, 0)))
-
-    return environment
 
 
 def _agent_sprite(radius_px: int) -> pygame.Surface:
@@ -111,6 +181,8 @@ def draw(
         screen.blits([(agent_sprite, rect) for rect in blit_pos])
 
     if debug:
+        _draw_perception_debug(screen, environment, scale)
+
         for i in range(int(environment.width / environment._cell_size) + 1):
             x = i * environment._cell_size * scale
             pygame.draw.line(screen, COLORS['debug'], (x, 0), (x, environment.height * scale))
@@ -118,6 +190,64 @@ def draw(
         for i in range(int(environment.height / environment._cell_size) + 1):
             y = i * environment._cell_size * scale
             pygame.draw.line(screen, COLORS['debug'], (0, y), (environment.width * scale, y))
+
+
+def _draw_perception_debug(screen: SurfaceType, environment: Environment, scale: float) -> None:
+    if len(environment.agents) == 0:
+        return
+
+    n_preview = min(8, len(environment.agents))
+    half_fov = 0.5 * environment.fov_rad
+    full_circle = environment.fov_rad >= 2.0 * pi - 1e-6
+
+    for i in range(n_preview):
+        origin = environment._pos[i]
+        origin_px = (float(origin[0] * scale), float(origin[1] * scale))
+        if full_circle:
+            pygame.draw.circle(
+                screen,
+                COLORS['fov'],
+                origin_px,
+                int(environment.view_range * scale),
+                1,
+            )
+            continue
+        heading = environment._heading[i]
+        cone_len = min(8.0, environment.view_range)
+        left = np.array([
+            heading[0] * cos(-half_fov) - heading[1] * sin(-half_fov),
+            heading[0] * sin(-half_fov) + heading[1] * cos(-half_fov),
+        ])
+        right = np.array([
+            heading[0] * cos(half_fov) - heading[1] * sin(half_fov),
+            heading[0] * sin(half_fov) + heading[1] * cos(half_fov),
+        ])
+        pygame.draw.polygon(
+            screen,
+            COLORS['fov'],
+            [
+                origin_px,
+                (float(origin_px[0] + left[0] * cone_len * scale), float(origin_px[1] + left[1] * cone_len * scale)),
+                (float(origin_px[0] + right[0] * cone_len * scale), float(origin_px[1] + right[1] * cone_len * scale)),
+            ],
+            width=1,
+        )
+
+    seen = environment._seen_exits
+    if seen.size == 0:
+        return
+    for i, agent in enumerate(environment.agents):
+        for j, ext in enumerate(environment.exits):
+            if j >= seen.shape[1] or not seen[i, j]:
+                continue
+            closest = np.asarray(ext.distances(agent.position).closest_point).reshape(2)
+            pygame.draw.line(
+                screen,
+                COLORS['seen'],
+                (float(agent.position[0] * scale), float(agent.position[1] * scale)),
+                (float(closest[0] * scale), float(closest[1] * scale)),
+                1,
+            )
 
 
 def run_simulation(
