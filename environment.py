@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 from exit import Exit
 from perception import unit_rows, visible_exit_mask
+from tom0 import ToM0Params, headings_from_beliefs
 
 
 # Newtons
@@ -33,6 +34,8 @@ class Environment:
             fov_rad: float = 2.0 * np.pi,
             wander_turn: float = 1.5,
             speed_limit_factor: float = 1.5,
+            tom0: ToM0Params | None = None,
+            tom_order: int = 0,
     ) -> None:
         self.width = width
         self.height = height
@@ -43,14 +46,29 @@ class Environment:
         self.fov_rad = fov_rad
         self.wander_turn = wander_turn
         self.speed_limit_factor = speed_limit_factor
+        self.tom0 = tom0 or ToM0Params()
+        self.tom_order = tom_order
         self._rng = np.random.default_rng()
+        self._t = 0.0
         self._grid = {}
         self._cell_size = self._compute_visibility()
         self._seen_exits = np.zeros((len(agents), 0), dtype=bool)
+        self._has_belief = np.zeros((len(agents), 0), dtype=bool)
+        self._belief_t = np.zeros((len(agents), 0), dtype=float)
+        self._belief_mu = np.zeros((len(agents), 0, 2), dtype=float)
+        self._chosen_exit = np.full(len(agents), -1, dtype=int)
+        self.initial_agent_count = len(agents)
+        self.escaped_by_exit: list[int] = []
+        self.evacuation_time: float | None = None
+        self.peak_memory_guided = 0
+        self.blind_committed_s = 0.0
+        self.peak_commit_distance = 0.0
         self._pack_agents()
 
     def add_exit(self, exit_: Exit) -> None:
         self.exits.append(exit_)
+        self.escaped_by_exit.append(0)
+        self._ensure_beliefs()
 
     def add_obstacle(self, obstacle: Obstacle) -> None:
         self.obstacles.append(obstacle)
@@ -81,16 +99,31 @@ class Environment:
         self._clip_speeds(vel, desired_speeds)
         pos += vel * dt
 
-        crossed = np.zeros(n, dtype=bool)
-        for exit_position in self.exits:
-            crossed |= exit_position.is_crossed_many(previous_position, pos)
+        claimed = np.zeros(n, dtype=bool)
+        for j, exit_position in enumerate(self.exits):
+            hit = exit_position.is_crossed_many(previous_position, pos) & ~claimed
+            if j < len(self.escaped_by_exit):
+                self.escaped_by_exit[j] += int(hit.sum())
+            claimed |= hit
 
-        if not np.any(crossed):
+        if not np.any(claimed):
+            self._t += dt
+            self._update_tom0_peaks(dt)
             return
 
-        keep = ~crossed
+        keep = ~claimed
         self.agents = [agent for agent, stayed in zip(self.agents, keep) if stayed]
+        self._has_belief = self._has_belief[keep]
+        self._belief_t = self._belief_t[keep]
+        self._belief_mu = self._belief_mu[keep]
+        self._chosen_exit = self._chosen_exit[keep]
+        if self._seen_exits.shape[0] == keep.shape[0]:
+            self._seen_exits = self._seen_exits[keep]
         self._pack_agents()
+        self._t += dt
+        if len(self.agents) == 0 and self.evacuation_time is None:
+            self.evacuation_time = self._t
+        self._update_tom0_peaks(dt)
 
     def _clip_speeds(self, vel: np.ndarray, desired_speeds: np.ndarray) -> None:
         speed = np.linalg.norm(vel, axis=1)
@@ -98,6 +131,62 @@ class Environment:
         too_fast = speed > vmax
         if np.any(too_fast):
             vel[too_fast] *= (vmax[too_fast] / np.maximum(speed[too_fast], MIN_DIST))[:, None]
+
+    def _update_tom0_peaks(self, dt: float) -> None:
+        stats = self.tom0_metrics()
+        self.peak_memory_guided = max(self.peak_memory_guided, stats['memory_guided'])
+        self.peak_commit_distance = max(self.peak_commit_distance, stats['max_commit_distance'])
+        self.blind_committed_s += stats['blind_committed'] * dt
+
+    def tom0_metrics(self) -> dict:
+        n = len(self.agents)
+        e = len(self.exits)
+        seeing = 0
+        with_belief = 0
+        memory_guided = 0
+        blind_committed = 0
+        no_belief = n
+        mean_sigma = 0.0
+        mean_age = 0.0
+        max_commit_distance = 0.0
+        if n > 0 and e > 0 and self._has_belief.shape == (n, e):
+            seeing_any = self._seen_exits.any(axis=1) if self._seen_exits.shape == (n, e) else np.zeros(n, dtype=bool)
+            seeing = int(seeing_any.sum())
+            has_any = self._has_belief.any(axis=1)
+            with_belief = int(has_any.sum())
+            no_belief = n - with_belief
+            blind_committed = int((~seeing_any & has_any).sum())
+            valid = self._chosen_exit >= 0
+            if np.any(valid) and self._seen_exits.shape == (n, e):
+                rows = np.flatnonzero(valid)
+                chosen = self._chosen_exit[rows]
+                memory_guided = int((~self._seen_exits[rows, chosen]).sum())
+                age = np.maximum(self._t - self._belief_t[rows, chosen], 0.0)
+                sigma = self.tom0.sigma0 + self.tom0.sigma_alpha * np.sqrt(age)
+                mean_age = float(age.mean())
+                mean_sigma = float(sigma.mean())
+                commit_dist = np.linalg.norm(self._belief_mu[rows, chosen] - self._pos[rows], axis=1)
+                max_commit_distance = float(commit_dist.max())
+        escaped = int(sum(self.escaped_by_exit))
+        return {
+            'n': n,
+            'initial': self.initial_agent_count,
+            'escaped': escaped,
+            'escaped_by_exit': list(self.escaped_by_exit),
+            'seeing': seeing,
+            'with_belief': with_belief,
+            'memory_guided': memory_guided,
+            'blind_committed': blind_committed,
+            'no_belief': no_belief,
+            'mean_sigma': mean_sigma,
+            'mean_age': mean_age,
+            'max_commit_distance': max_commit_distance,
+            'peak_memory_guided': self.peak_memory_guided,
+            'peak_commit_distance': self.peak_commit_distance,
+            'blind_committed_s': self.blind_committed_s,
+            't': self._t,
+            'evacuation_time': self.evacuation_time,
+        }
 
     def get_visible_agents(self, agent: Agent) -> list[Agent]:
         """
@@ -127,6 +216,10 @@ class Environment:
             self._B = np.empty(0, dtype=float)
             self._heading = np.empty((0, 2), dtype=float)
             self._seen_exits = np.zeros((0, len(self.exits)), dtype=bool)
+            self._has_belief = np.zeros((0, len(self.exits)), dtype=bool)
+            self._belief_t = np.zeros((0, len(self.exits)), dtype=float)
+            self._belief_mu = np.zeros((0, len(self.exits), 2), dtype=float)
+            self._chosen_exit = np.empty(0, dtype=int)
             return
         self._pos = np.array([agent.position for agent in self.agents], dtype=float)
         self._vel = np.array([agent.velocity for agent in self.agents], dtype=float)
@@ -147,41 +240,93 @@ class Environment:
             agent.position = self._pos[i]
             agent.velocity = self._vel[i]
             agent.desired_direction = self._heading[i]
-        self._seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
+        if self._seen_exits.shape != (n, len(self.exits)):
+            self._seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
+        self._ensure_beliefs()
+
+    def _ensure_beliefs(self) -> None:
+        n = len(self.agents)
+        e = len(self.exits)
+        old_has = getattr(self, '_has_belief', None)
+        if old_has is not None and old_has.shape == (n, e):
+            return
+
+        has_belief = np.zeros((n, e), dtype=bool)
+        belief_t = np.zeros((n, e), dtype=float)
+        belief_mu = np.zeros((n, e, 2), dtype=float)
+        if old_has is not None and old_has.size:
+            n_copy = min(n, old_has.shape[0])
+            e_copy = min(e, old_has.shape[1])
+            has_belief[:n_copy, :e_copy] = old_has[:n_copy, :e_copy]
+            belief_t[:n_copy, :e_copy] = self._belief_t[:n_copy, :e_copy]
+            belief_mu[:n_copy, :e_copy] = self._belief_mu[:n_copy, :e_copy]
+        self._has_belief = has_belief
+        self._belief_t = belief_t
+        self._belief_mu = belief_mu
+        if getattr(self, '_chosen_exit', np.array([])).shape != (n,):
+            self._chosen_exit = np.full(n, -1, dtype=int)
 
     def _desired_directions(self, pos: np.ndarray, dt: float) -> np.ndarray:
         n = len(pos)
         if not self.exits:
             return self._heading.copy()
 
-        look = self._heading
-        best_distance = np.full(n, np.inf)
-        best_closest = np.zeros((n, 2))
-        seen_any = np.zeros(n, dtype=bool)
+        self._ensure_beliefs()
+        params = self.tom0
         seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
 
         for j, exit_position in enumerate(self.exits):
             query = exit_position.distances(pos)
             seen = visible_exit_mask(
                 pos,
-                look,
+                self._heading,
                 query.closest_point,
                 self.obstacles,
                 self.view_range,
                 self.fov_rad,
             )
             seen_exits[:, j] = seen
-            closer = seen & (query.distance < best_distance)
-            best_distance = np.where(closer, query.distance, best_distance)
-            best_closest = np.where(closer[:, None], query.closest_point, best_closest)
-            seen_any |= seen
+            if np.any(seen) and self.tom_order >= 0:
+                self._has_belief[seen, j] = True
+                self._belief_t[seen, j] = self._t
+                self._belief_mu[seen, j] = query.closest_point[seen]
 
         self._seen_exits = seen_exits
+        if self.tom_order < 0:
+            best_distance = np.full(n, np.inf)
+            best_closest = np.zeros((n, 2))
+            seen_any = seen_exits.any(axis=1)
+            for j, exit_position in enumerate(self.exits):
+                query = exit_position.distances(pos)
+                closer = seen_exits[:, j] & (query.distance < best_distance)
+                best_distance = np.where(closer, query.distance, best_distance)
+                best_closest = np.where(closer[:, None], query.closest_point, best_closest)
+            toward_exit = unit_rows(best_closest - pos)
+            fallback = self._follow_or_wander(pos, seen_any, dt)
+            chosen = np.full(n, -1, dtype=int)
+            for j, exit_position in enumerate(self.exits):
+                query = exit_position.distances(pos)
+                pick = seen_exits[:, j] & (query.distance <= best_distance + 1e-9)
+                chosen = np.where(pick & (chosen < 0), j, chosen)
+            self._chosen_exit = chosen
+            return np.where(seen_any[:, None], toward_exit, fallback)
 
-        displacement = best_closest - pos
-        toward_exit = unit_rows(displacement)
-        fallback = self._follow_or_wander(pos, seen_any, dt)
-        return np.where(seen_any[:, None], toward_exit, fallback)
+        age = np.maximum(self._t - self._belief_t, 0.0)
+        sigma = params.sigma0 + params.sigma_alpha * np.sqrt(age)
+        sigma = np.where(self._has_belief, sigma, np.inf)
+
+        tom_heading, chosen, _occupancy = headings_from_beliefs(
+            pos,
+            self._belief_mu,
+            self._has_belief,
+            sigma,
+            params,
+        )
+        self._chosen_exit = chosen
+
+        has_any_belief = chosen >= 0
+        fallback = self._follow_or_wander(pos, has_any_belief, dt)
+        return np.where(has_any_belief[:, None], tom_heading, fallback)
 
     def _follow_or_wander(self, pos: np.ndarray, informed: np.ndarray, dt: float) -> np.ndarray:
         n = len(pos)

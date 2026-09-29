@@ -1,126 +1,33 @@
+import argparse
 import os
+from math import pi
+from pathlib import Path
 
-# Disable Retina backing-store scaling so pygame is not filling 4x the pixels.
 os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "1")
 os.environ.setdefault("SDL_HINT_RENDER_SCALE_QUALITY", "0")
 
-from random import random
-from math import cos, sin, pi
-from typing import Callable
-
-import pygame
 import numpy as np
+import pygame
 from pygame.surface import SurfaceType
 
-from agent import Agent
 from environment import Environment
-from exit import Exit
-from obstacle import Wall, Circle, Obstacle
-
-Point = tuple[float, float]
+from experiment import (
+    ExperimentConfig,
+    build_environment,
+    list_experiments,
+    load_experiment,
+    save_experiment,
+    tom_order_label,
+)
+from layout import SideExit, nearest_boundary
+from obstacle import Circle, Wall
+from plots import History, SIM_SIZE, WINDOW_SIZE, draw_plots
 
 WALL_WIDTH = 20
 EXIT_WIDTH = int(WALL_WIDTH * 1.5)
-
-WINDOW_SIZE = (1000, 1000)
 MAX_PHYSICS_STEPS = 2
-VIEW_RANGE = 40.0
-FOV_DEG = 360.0
-EXIT_WIDTH_WORLD = 3.0
-AGENT_COUNT = 400
-AGENT_RADIUS = 0.3
-SPAWN_CLEARANCE = 0.05
-SPAWN_ATTEMPTS = 10_000
-
-
-def _position_is_free(
-        candidate: np.ndarray,
-        radius: float,
-        placed: np.ndarray,
-        obstacles: list[Obstacle],
-) -> bool:
-    min_gap = 2.0 * radius + SPAWN_CLEARANCE
-    if len(placed) > 0:
-        if np.min(np.linalg.norm(placed - candidate, axis=1)) < min_gap:
-            return False
-    for obstacle in obstacles:
-        if float(obstacle.distances(candidate).distance[0]) < radius + SPAWN_CLEARANCE:
-            return False
-    return True
-
-
-def _spawn_positions(
-        count: int,
-        radius: float,
-        width: float,
-        height: float,
-        obstacles: list[Obstacle],
-) -> np.ndarray:
-    margin = radius + SPAWN_CLEARANCE + 1.0
-    positions = np.empty((count, 2), dtype=float)
-    placed = 0
-    attempts = 0
-    max_attempts = SPAWN_ATTEMPTS * count
-    while placed < count:
-        if attempts >= max_attempts:
-            raise RuntimeError(f'Could not place agent {placed + 1} without overlap')
-        attempts += 1
-        candidate = np.array([
-            margin + random() * (width - 2.0 * margin),
-            margin + random() * (height - 2.0 * margin),
-        ], dtype=float)
-        if not _position_is_free(candidate, radius, positions[:placed], obstacles):
-            continue
-        positions[placed] = candidate
-        placed += 1
-    min_gap = 2.0 * radius + SPAWN_CLEARANCE
-    dist = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
-    np.fill_diagonal(dist, np.inf)
-    if dist.min() < min_gap:
-        raise RuntimeError(f'spawn overlap: min dist {dist.min()} < {min_gap}')
-    return positions
-
-
-def build_environment() -> Environment:
-    north = ((50.0, 0.0), (50.0 + EXIT_WIDTH_WORLD, 0.0))
-    south = ((50.0, 100.0), (50.0 + EXIT_WIDTH_WORLD, 100.0))
-    obstacles: list[Obstacle] = [
-        Wall((0, 0), (0, 100)),
-        Wall((0, 0), north[0]),
-        Wall(north[1], (100, 0)),
-        Wall((0, 100), south[0]),
-        Wall(south[1], (100, 100)),
-        Wall((100, 100), (100, 0)),
-    ]
-
-    agents = []
-    for i, agent_pos in enumerate(_spawn_positions(AGENT_COUNT, AGENT_RADIUS, 100, 100, obstacles)):
-        angle = random() * 2.0 * pi
-        agents.append(Agent(
-            social_repulsion=(2e3, 0.08),
-            idx=i,
-            mass=1.0,
-            radius=AGENT_RADIUS,
-            position=np.array(agent_pos, dtype=float, copy=True),
-            velocity=np.zeros(2, dtype=float),
-            desired_speed=np.float32(2.0),
-            desired_direction=np.array([cos(angle), sin(angle)], dtype=float),
-            tau=1.0,
-        ))
-
-    environment = Environment(
-        100,
-        100,
-        agents,
-        view_range=VIEW_RANGE,
-        fov_rad=np.deg2rad(FOV_DEG),
-    )
-    environment.add_exit(Exit(*north))
-    environment.add_exit(Exit(*south))
-    for obstacle in obstacles:
-        environment.add_obstacle(obstacle)
-
-    return environment
+EXPERIMENT_DIR = Path(__file__).parent / 'experiments'
+DEFAULT_EXPERIMENT = EXPERIMENT_DIR / 'two-north-one-south.yaml'
 
 COLORS = {
     'agent': (0, 0, 255),
@@ -130,7 +37,10 @@ COLORS = {
     'debug': (255, 0, 0),
     'fov': (0, 170, 255),
     'seen': (0, 200, 120),
+    'memory': (255, 140, 0),
     'background': (255, 255, 255),
+    'edit': (180, 0, 180),
+    'preview': (120, 80, 180),
 }
 
 
@@ -141,28 +51,75 @@ def _agent_sprite(radius_px: int) -> pygame.Surface:
     return sprite
 
 
+def _exit_name(environment: Environment, index: int) -> str:
+    if index >= len(environment.exits):
+        return f'exit {index}'
+    x = float(environment.exits[index].start[0])
+    y = float(environment.exits[index].start[1])
+    if abs(y) < 1e-6:
+        return 'NW' if x < environment.width / 2 else 'NE'
+    if abs(y - environment.height) < 1e-6:
+        return 'south'
+    if abs(x) < 1e-6:
+        return 'west'
+    if abs(x - environment.width) < 1e-6:
+        return 'east'
+    return f'exit {index}'
+
+
+def _draw_hud(
+        screen: SurfaceType,
+        environment: Environment,
+        config: ExperimentConfig,
+        time_scale: float,
+        font: pygame.font.Font,
+        edit_mode: bool,
+        place_mode: str,
+) -> None:
+    stats = environment.tom0_metrics()
+    if stats['evacuation_time'] is None:
+        timer = f"t = {stats['t']:.2f}s"
+    else:
+        timer = f"all escaped in {stats['evacuation_time']:.2f}s"
+
+    exits = ', '.join(
+        f"{_exit_name(environment, i)}={count}"
+        for i, count in enumerate(stats['escaped_by_exit'])
+    ) or 'none'
+    mode = f'EDIT {place_mode}' if edit_mode else 'run'
+
+    lines = [
+        f"{config.name}   {tom_order_label(config.tom_order)}   {mode}",
+        timer,
+        f"x{time_scale:.2f}   remaining {stats['n']}/{stats['initial']}",
+        f"escaped {stats['escaped']}   ({exits})",
+        f"seeing: {stats['seeing']}   know: {stats['with_belief']}   never seen: {stats['no_belief']}",
+        f"ToM-0 unseen choice: {stats['memory_guided']}  peak {stats['peak_memory_guided']}",
+        f"blind committed: {stats['blind_committed']}   {stats['blind_committed_s']:.1f} person-s",
+    ]
+    y = 12
+    for line in lines:
+        screen.blit(font.render(line, False, COLORS['text']), (12, y))
+        y += 24
+
+
 def draw(
         screen: SurfaceType,
         environment: Environment,
+        config: ExperimentConfig,
         scale: float,
         time_scale: float,
         debug: bool,
         font: pygame.font.Font,
         agent_sprite: pygame.Surface,
-        label_cache: dict,
+        history: History,
+        edit_mode: bool,
+        place_mode: str,
+        drag_start: tuple[float, float] | None,
+        mouse_world: tuple[float, float] | None,
 ) -> None:
     screen.fill(COLORS['background'])
-
-    key = (f'{time_scale:.2f}', len(environment.agents))
-    if key not in label_cache:
-        label_cache.clear()
-        label_cache[key] = (
-            font.render(f'x{time_scale:.2f}', False, COLORS['text']),
-            font.render(f'number of agents: {len(environment.agents)}', False, COLORS['text']),
-        )
-    text_scale, text_agent = label_cache[key]
-    screen.blit(text_scale, (20, 20))
-    screen.blit(text_agent, (20, 50))
+    _draw_hud(screen, environment, config, time_scale, font, edit_mode, place_mode)
 
     for obj in environment.obstacles:
         if isinstance(obj, Wall):
@@ -180,16 +137,25 @@ def draw(
     if blit_pos:
         screen.blits([(agent_sprite, rect) for rect in blit_pos])
 
+    if edit_mode and drag_start is not None and mouse_world is not None:
+        if place_mode == 'circle':
+            radius = float(np.linalg.norm(np.array(mouse_world) - np.array(drag_start)))
+            pygame.draw.circle(
+                screen, COLORS['preview'],
+                (drag_start[0] * scale, drag_start[1] * scale),
+                max(1, int(radius * scale)), 2,
+            )
+        else:
+            pygame.draw.line(
+                screen, COLORS['preview'],
+                (drag_start[0] * scale, drag_start[1] * scale),
+                (mouse_world[0] * scale, mouse_world[1] * scale), 3,
+            )
+
     if debug:
         _draw_perception_debug(screen, environment, scale)
 
-        for i in range(int(environment.width / environment._cell_size) + 1):
-            x = i * environment._cell_size * scale
-            pygame.draw.line(screen, COLORS['debug'], (x, 0), (x, environment.height * scale))
-
-        for i in range(int(environment.height / environment._cell_size) + 1):
-            y = i * environment._cell_size * scale
-            pygame.draw.line(screen, COLORS['debug'], (0, y), (environment.width * scale, y))
+    draw_plots(screen, history, font, environment.initial_agent_count)
 
 
 def _draw_perception_debug(screen: SurfaceType, environment: Environment, scale: float) -> None:
@@ -197,123 +163,205 @@ def _draw_perception_debug(screen: SurfaceType, environment: Environment, scale:
         return
 
     n_preview = min(8, len(environment.agents))
-    half_fov = 0.5 * environment.fov_rad
     full_circle = environment.fov_rad >= 2.0 * pi - 1e-6
-
     for i in range(n_preview):
         origin = environment._pos[i]
         origin_px = (float(origin[0] * scale), float(origin[1] * scale))
         if full_circle:
             pygame.draw.circle(
-                screen,
-                COLORS['fov'],
-                origin_px,
-                int(environment.view_range * scale),
-                1,
+                screen, COLORS['fov'], origin_px,
+                int(environment.view_range * scale), 1,
             )
-            continue
-        heading = environment._heading[i]
-        cone_len = min(8.0, environment.view_range)
-        left = np.array([
-            heading[0] * cos(-half_fov) - heading[1] * sin(-half_fov),
-            heading[0] * sin(-half_fov) + heading[1] * cos(-half_fov),
-        ])
-        right = np.array([
-            heading[0] * cos(half_fov) - heading[1] * sin(half_fov),
-            heading[0] * sin(half_fov) + heading[1] * cos(half_fov),
-        ])
-        pygame.draw.polygon(
-            screen,
-            COLORS['fov'],
-            [
-                origin_px,
-                (float(origin_px[0] + left[0] * cone_len * scale), float(origin_px[1] + left[1] * cone_len * scale)),
-                (float(origin_px[0] + right[0] * cone_len * scale), float(origin_px[1] + right[1] * cone_len * scale)),
-            ],
-            width=1,
-        )
 
     seen = environment._seen_exits
-    if seen.size == 0:
+    has_belief = getattr(environment, '_has_belief', None)
+    if seen.size == 0 and (has_belief is None or has_belief.size == 0):
         return
     for i, agent in enumerate(environment.agents):
+        origin = (float(agent.position[0] * scale), float(agent.position[1] * scale))
         for j, ext in enumerate(environment.exits):
-            if j >= seen.shape[1] or not seen[i, j]:
+            currently_seen = seen.size > 0 and j < seen.shape[1] and seen[i, j]
+            remembered = (
+                has_belief is not None and has_belief.size > 0
+                and j < has_belief.shape[1] and has_belief[i, j]
+            )
+            if currently_seen:
+                closest = np.asarray(ext.distances(agent.position).closest_point).reshape(2)
+                target, color = closest, COLORS['seen']
+            elif remembered:
+                target, color = environment._belief_mu[i, j], COLORS['memory']
+            else:
                 continue
-            closest = np.asarray(ext.distances(agent.position).closest_point).reshape(2)
             pygame.draw.line(
-                screen,
-                COLORS['seen'],
-                (float(agent.position[0] * scale), float(agent.position[1] * scale)),
-                (float(closest[0] * scale), float(closest[1] * scale)),
-                1,
+                screen, color, origin,
+                (float(target[0] * scale), float(target[1] * scale)), 1,
             )
 
 
-def run_simulation(
-        reset: Callable[[], Environment],
-        fps: int,
-) -> None:
-    environment = reset()
+def _world_from_mouse(pos: tuple[int, int], scale: float) -> tuple[float, float] | None:
+    x, y = pos
+    if x >= SIM_SIZE or y >= SIM_SIZE:
+        return None
+    return x / scale, y / scale
 
-    scale = WINDOW_SIZE[0] / environment.width
+
+def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> None:
+    environment = build_environment(config)
+    scale = SIM_SIZE / environment.width
 
     pygame.init()
     pygame.font.init()
-    font = pygame.font.SysFont('Comic Sans MS', 30)
+    pygame.display.set_caption('crowd-tom')
+    font = pygame.font.SysFont('Comic Sans MS', 18)
     screen = pygame.display.set_mode(WINDOW_SIZE, pygame.DOUBLEBUF, vsync=0)
     clock = pygame.time.Clock()
-    agent_radius_px = max(1, int(environment.agents[0].radius * scale)) if environment.agents else 1
-    sprite = _agent_sprite(agent_radius_px)
-    label_cache: dict = {}
-
+    sprite = _agent_sprite(max(1, int(config.agent_radius * scale)))
+    history = History()
+    reported_done = False
     time_scale = 1.0
-    timesteps = 0
     running = True
     dt = 1.0 / 60
     accumulator = 0.0
     paused = False
     debug = False
+    edit_mode = False
+    place_mode = 'wall'
+    drag_start: tuple[float, float] | None = None
+    experiment_index = 0
+    if config.source_path in catalog:
+        experiment_index = catalog.index(config.source_path)
+
+    def reset() -> None:
+        nonlocal environment, reported_done, accumulator, sprite
+        environment = build_environment(config)
+        sprite = _agent_sprite(max(1, int(config.agent_radius * scale)))
+        history.clear()
+        reported_done = False
+        accumulator = 0.0
 
     while running:
         frame_time = min(clock.tick(fps) / 1000.0, 0.05)
+        mouse_world = _world_from_mouse(pygame.mouse.get_pos(), scale)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
-            if event.type == pygame.KEYDOWN:
+            elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     paused = not paused
                 elif event.key == pygame.K_r:
-                    environment = reset()
-                    label_cache.clear()
-                    draw(screen, environment, scale, time_scale, debug, font, sprite, label_cache)
+                    reset()
                 elif event.key == pygame.K_MINUS:
                     time_scale = max(0.1, time_scale - 0.1)
-                elif event.key == pygame.K_PLUS:
-                    time_scale = min(2, time_scale + 0.1)
+                elif event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS:
+                    time_scale = min(4.0, time_scale + 0.1)
                 elif event.key == pygame.K_d:
                     debug = not debug
+                elif event.key == pygame.K_t:
+                    config.tom_order = 0 if config.tom_order < 0 else -1
+                    environment.tom_order = config.tom_order
+                elif event.key == pygame.K_e:
+                    edit_mode = not edit_mode
+                    paused = True
+                    drag_start = None
+                elif event.key == pygame.K_w:
+                    place_mode = 'wall'
+                elif event.key == pygame.K_c:
+                    place_mode = 'circle'
+                elif event.key == pygame.K_LEFTBRACKET and catalog:
+                    experiment_index = (experiment_index - 1) % len(catalog)
+                    config = load_experiment(catalog[experiment_index])
+                    reset()
+                elif event.key == pygame.K_RIGHTBRACKET and catalog:
+                    experiment_index = (experiment_index + 1) % len(catalog)
+                    config = load_experiment(catalog[experiment_index])
+                    reset()
+                elif event.key == pygame.K_f:
+                    path = save_experiment(config, EXPERIMENT_DIR / 'last.yaml')
+                    print(f'saved experiment {path}')
+                elif event.key == pygame.K_g:
+                    path = EXPERIMENT_DIR / 'last-metrics.csv'
+                    path.write_text(history.to_csv())
+                    print(f'saved metrics {path}')
+                elif event.key == pygame.K_BACKSPACE and edit_mode:
+                    if config.circles:
+                        config.circles.pop()
+                        reset()
+                    elif config.interior_walls:
+                        config.interior_walls.pop()
+                        reset()
+                    elif config.exits:
+                        config.exits.pop()
+                        reset()
 
-        if not paused:
+            elif event.type == pygame.MOUSEBUTTONDOWN and edit_mode and event.button == 1:
+                drag_start = _world_from_mouse(event.pos, scale)
+
+            elif event.type == pygame.MOUSEBUTTONUP and edit_mode and event.button == 1 and drag_start:
+                end = _world_from_mouse(event.pos, scale)
+                drag_start_local = drag_start
+                drag_start = None
+                if end is None:
+                    continue
+                travel = float(np.linalg.norm(np.array(end) - np.array(drag_start_local)))
+                if travel < 1.0:
+                    hit = nearest_boundary(end[0], end[1], config.width, config.height)
+                    if hit is not None:
+                        side, along = hit
+                        config.exits.append(SideExit(side=side, center=along, width=3.0))
+                        reset()
+                    continue
+                if place_mode == 'circle':
+                    config.circles.append((drag_start_local, travel))
+                else:
+                    config.interior_walls.append((drag_start_local, end))
+                reset()
+
+        if not paused and not edit_mode:
             accumulator += frame_time * time_scale
             steps = 0
             while accumulator >= dt and steps < MAX_PHYSICS_STEPS:
                 environment.tick(dt)
-                timesteps += 1
+                history.record(environment.tom0_metrics())
                 accumulator -= dt
                 steps += 1
             if accumulator > dt:
                 accumulator = dt
 
-        draw(screen, environment, scale, time_scale, debug, font, sprite, label_cache)
+        if environment.evacuation_time is not None and not reported_done:
+            stats = environment.tom0_metrics()
+            print(
+                f"evacuated in {stats['evacuation_time']:.2f}s | "
+                f"escaped {stats['escaped_by_exit']} | "
+                f"peak memory-guided {stats['peak_memory_guided']}"
+            )
+            csv_path = EXPERIMENT_DIR / 'last-metrics.csv'
+            csv_path.write_text(history.to_csv())
+            reported_done = True
+
+        draw(
+            screen, environment, config, scale, time_scale, debug, font, sprite,
+            history, edit_mode, place_mode, drag_start, mouse_world,
+        )
         pygame.display.flip()
 
     pygame.quit()
 
-def main():
-    run_simulation(build_environment, fps=60)
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Crowd ToM simulator')
+    parser.add_argument(
+        'experiment',
+        nargs='?',
+        default=str(DEFAULT_EXPERIMENT),
+        help='YAML experiment file',
+    )
+    args = parser.parse_args()
+    catalog = list_experiments(EXPERIMENT_DIR)
+    config = load_experiment(args.experiment)
+    run_simulation(config, catalog, fps=60)
+
 
 if __name__ == '__main__':
     main()

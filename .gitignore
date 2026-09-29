@@ -1,2 +1,6 @@
 .idea
-__pycache__
+.venv
+__pycache__/
+*.pyc
+experiments/last.yaml
+experiments/last-metrics.csv
