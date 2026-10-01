@@ -41,6 +41,7 @@ def cone_density(
         targets: np.ndarray,
         occupancy_range: float,
         occupancy_fov_rad: float,
+        visible: np.ndarray | None = None,
 ) -> np.ndarray:
     """Density of other agents in a cone from each agent toward each target. Shape (N, E)."""
     n = len(pos)
@@ -51,6 +52,8 @@ def cone_density(
     delta = pos[None, :, :] - pos[:, None, :]
     dist = np.linalg.norm(delta, axis=2)
     in_range = (dist > EPSILON) & (dist <= occupancy_range)
+    if visible is not None:
+        in_range &= visible
 
     to_agent = np.zeros_like(delta)
     safe_dist = np.maximum(dist, EPSILON)
@@ -92,6 +95,7 @@ def headings_from_beliefs(
         has_belief: np.ndarray,
         sigma: np.ndarray,
         params: ToM0Params,
+        visible: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (heading, chosen_exit, occupancy). chosen_exit is -1 if no belief."""
     n = len(pos)
@@ -99,7 +103,9 @@ def headings_from_beliefs(
     if n == 0 or e == 0:
         return np.zeros((n, 2)), np.full(n, -1, dtype=int), np.zeros((n, e))
 
-    occupancy = cone_density(pos, mu, params.occupancy_range, params.occupancy_fov_rad)
+    occupancy = cone_density(
+        pos, mu, params.occupancy_range, params.occupancy_fov_rad, visible=visible,
+    )
     distance = np.linalg.norm(mu - pos[:, None, :], axis=2)
     score = utilities(distance, occupancy, sigma, has_belief, params)
     chosen = np.argmax(score, axis=1)

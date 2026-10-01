@@ -95,3 +95,36 @@ def visible_exit_mask(
     in_fov = True if fov_rad >= 2.0 * np.pi - 1e-9 else np.sum(heading * direction, axis=1) >= np.cos(0.5 * fov_rad)
     blocked = line_of_sight_blocked(positions, targets, obstacles)
     return in_range & in_fov & ~blocked
+
+
+def pairwise_visible_mask(
+        positions: np.ndarray,
+        headings: np.ndarray,
+        obstacles: list[Obstacle],
+        view_range: float,
+        fov_rad: float,
+) -> np.ndarray:
+    """Return (N, N) booleans: whether agent i can see agent j. Diagonal is False."""
+    n = len(positions)
+    if n == 0:
+        return np.zeros((0, 0), dtype=bool)
+
+    offset = positions[None, :, :] - positions[:, None, :]
+    distance = np.linalg.norm(offset, axis=2)
+    visible = (distance > EPSILON) & (distance <= view_range)
+
+    if fov_rad < 2.0 * np.pi - 1e-9:
+        direction = np.zeros_like(offset)
+        safe = np.maximum(distance, EPSILON)
+        mask = visible
+        direction[mask] = offset[mask] / safe[mask, None]
+        heading = unit_rows(headings)
+        cosine = np.sum(heading[:, None, :] * direction, axis=2)
+        visible &= cosine >= np.cos(0.5 * fov_rad)
+
+    ii, jj = np.nonzero(visible)
+    if len(ii) == 0:
+        return visible
+    blocked = line_of_sight_blocked(positions[ii], positions[jj], obstacles)
+    visible[ii[blocked], jj[blocked]] = False
+    return visible

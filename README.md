@@ -26,31 +26,35 @@ A pygame window opens: the room on the left, live plots on the right. Close the 
 
 ### Bundled scenes (`experiments/`)
 
-| File | Layout |
-|---|---|
+
+| File                       | Layout                                                      |
+| -------------------------- | ----------------------------------------------------------- |
 | `two-north-one-south.yaml` | Default: two north doors, one south (no interior obstacles) |
-| `north-south.yaml` | One north, one south |
-| `four-doors.yaml` | North, south, east, west |
-| `pillar.yaml` | Two north + one south, plus a bar and a circular pillar |
+| `north-south.yaml`         | One north, one south                                        |
+| `four-doors.yaml`          | North, south, east, west                                    |
+| `pillar.yaml`              | Two north + one south, plus a bar and a circular pillar     |
+
 
 `tom_order` in YAML: `0` = ToM-0, `null` / `none` = reactive (no memory).
 
 ## Controls
 
-| Key | Action |
-|---|---|
-| Space | Pause |
-| R | Reset this experiment (new spawn) |
-| + / - | Simulation speed |
-| T | Toggle **ToM-0** ↔ **reactive** (no memory) |
-| [ / ] | Previous / next YAML in `experiments/` |
-| E | Edit mode (pauses). Place geometry, then the crowd respawns |
-| W / C | In edit mode: draw a **wall** or **circle** (click-drag) |
-| Click a wall edge | In edit mode: add a width-3 door on that side |
-| Backspace | Undo last circle, interior wall, or door |
-| F | Save current layout to `experiments/last.yaml` (gitignored) |
-| G | Save plot time series to `experiments/last-metrics.csv` (gitignored) |
-| D | Debug: range circles, green = seeing a door, orange = remembered door |
+
+| Key               | Action                                                                |
+| ----------------- | --------------------------------------------------------------------- |
+| Space             | Pause                                                                 |
+| R                 | Reset this experiment (new spawn)                                     |
+| + / -             | Simulation speed                                                      |
+| T                 | Toggle **ToM-0** ↔ **reactive** (no memory)                           |
+| [ / ]             | Previous / next YAML in `experiments/`                                |
+| E                 | Edit mode (pauses). Place geometry, then the crowd respawns           |
+| W / C             | In edit mode: draw a **wall** or **circle** (click-drag)              |
+| Click a wall edge | In edit mode: add a width-3 door on that side                         |
+| Backspace         | Undo last circle, interior wall, or door                              |
+| F                 | Save current layout to `experiments/last.yaml` (gitignored)           |
+| G                 | Save plot time series to `experiments/last-metrics.csv` (gitignored)  |
+| D                 | Debug: range circles, green = seeing a door, orange = remembered door |
+
 
 When the last agent leaves, the HUD shows **all escaped in Xs** and writes `experiments/last-metrics.csv`.
 
@@ -58,9 +62,9 @@ When the last agent leaves, the HUD shows **all escaped in Xs** and writes `expe
 
 **Perception:** 360° view, range **40**, blocked by walls/circles. Unseen doors are not “visible”.
 
-**Reactive (`tom_order: none`):** walk to the nearest *currently* visible door. If none, follow someone who sees a door, else wander.
+**Reactive (**`tom_order: none`**):** walk to the nearest *currently* visible door. If none, follow someone who sees a door, else wander.
 
-**ToM-0 (`tom_order: 0`):** on sight, store last-seen time and door position. Uncertainty grows as \(\sigma_0 + \alpha\sqrt{\Delta t}\). Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. If they have never seen any door, they follow a committed agent.
+**ToM-0 (**`tom_order: 0`**):** on sight, store last-seen time and door position. Uncertainty grows as \sigma_0 + \alpha\sqrt{\Delta t}. Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. If they have never seen any door, they follow a committed agent.
 
 ToM-1 is not implemented. **T** only switches reactive vs ToM-0.
 
@@ -102,20 +106,26 @@ obstacles:
 - **ToM-0 unseen choice:** heading to a remembered door that is out of sight (should stay 0 in reactive mode)
 - Right panel: remaining vs escaped, and ToM-state series over time
 
+
+
 ## Project layout
 
-| Path | Role |
-|---|---|
-| `main.py` | Window, keys, editor, plots |
-| `experiment.py` | Load/save YAML, spawn agents |
-| `layout.py` | Doors on walls → perimeter segments |
-| `environment.py` | Time step, forces, ToM vs reactive choice |
-| `tom0.py` | Belief scoring (distance, occupancy, uncertainty) |
-| `perception.py` | Range, FOV, line of sight |
-| `agent.py` | Helbing agent parameters |
-| `obstacle.py` / `exit.py` | Walls, circles, exit crossing |
-| `plots.py` | Live metric panel + CSV export |
-| `experiments/` | Scene files to share |
+
+| Path                      | Role                                              |
+| ------------------------- | ------------------------------------------------- |
+| `main.py`                 | Window, keys, editor, plots                       |
+| `experiment.py`           | Load/save YAML, spawn agents                      |
+| `layout.py`               | Doors on walls → perimeter segments               |
+| `environment.py`          | Time step, forces, ToM vs reactive choice         |
+| `tom0.py`                 | Belief scoring (distance, occupancy, uncertainty) |
+| `perception.py`           | Range, FOV, line of sight                         |
+| `agent.py`                | Helbing agent parameters                          |
+| `obstacle.py` / `exit.py` | Walls, circles, exit crossing                     |
+| `plots.py`                | Live metric panel + CSV export                    |
+| `experiments/`            | Scene files to share                              |
+
+
+
 
 ## Commit / push (for this branch)
 
@@ -131,4 +141,3 @@ git commit -m "Add ToM-0, YAML experiments, editor, and live metrics."
 git push -u origin tom0-environments
 ```
 
-Teammates: `git fetch && git checkout tom0-environments && uv sync && uv run python main.py`.

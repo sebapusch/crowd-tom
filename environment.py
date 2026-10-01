@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from obstacle import Obstacle
 
 from exit import Exit
-from perception import unit_rows, visible_exit_mask
+from perception import pairwise_visible_mask, unit_rows, visible_exit_mask
 from tom0 import ToM0Params, headings_from_beliefs
 
 
@@ -292,6 +292,9 @@ class Environment:
                 self._belief_mu[seen, j] = query.closest_point[seen]
 
         self._seen_exits = seen_exits
+        visible_agents = pairwise_visible_mask(
+            pos, self._heading, self.obstacles, self.view_range, self.fov_rad,
+        )
         if self.tom_order < 0:
             best_distance = np.full(n, np.inf)
             best_closest = np.zeros((n, 2))
@@ -302,7 +305,7 @@ class Environment:
                 best_distance = np.where(closer, query.distance, best_distance)
                 best_closest = np.where(closer[:, None], query.closest_point, best_closest)
             toward_exit = unit_rows(best_closest - pos)
-            fallback = self._follow_or_wander(pos, seen_any, dt)
+            fallback = self._follow_or_wander(pos, seen_any, dt, visible_agents)
             chosen = np.full(n, -1, dtype=int)
             for j, exit_position in enumerate(self.exits):
                 query = exit_position.distances(pos)
@@ -321,14 +324,21 @@ class Environment:
             self._has_belief,
             sigma,
             params,
+            visible=visible_agents,
         )
         self._chosen_exit = chosen
 
         has_any_belief = chosen >= 0
-        fallback = self._follow_or_wander(pos, has_any_belief, dt)
+        fallback = self._follow_or_wander(pos, has_any_belief, dt, visible_agents)
         return np.where(has_any_belief[:, None], tom_heading, fallback)
 
-    def _follow_or_wander(self, pos: np.ndarray, informed: np.ndarray, dt: float) -> np.ndarray:
+    def _follow_or_wander(
+            self,
+            pos: np.ndarray,
+            informed: np.ndarray,
+            dt: float,
+            visible: np.ndarray,
+    ) -> np.ndarray:
         n = len(pos)
         turn = self._rng.normal(0.0, self.wander_turn * dt, size=n)
         wander = self._rotate_headings(self._heading, turn)
@@ -338,6 +348,7 @@ class Environment:
         offset = pos[None, :, :] - pos[:, None, :]
         dist = np.linalg.norm(offset, axis=2)
         np.fill_diagonal(dist, np.inf)
+        dist[~visible] = np.inf
         dist[:, ~informed] = np.inf
         nearest = np.argmin(dist, axis=1)
         can_follow = np.isfinite(dist[np.arange(n), nearest])
