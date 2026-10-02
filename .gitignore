@@ -3,4 +3,4 @@
 __pycache__/
 *.pyc
 experiments/last.yaml
-experiments/last-metrics.csv
+experiments/last-metrics-*.csv

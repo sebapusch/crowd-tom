@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from math import cos, pi, sin
 from pathlib import Path
-from random import random
+from random import random, shuffle
 from typing import Any
 
 import numpy as np
@@ -15,6 +15,7 @@ from exit import Exit
 from layout import SideExit, exit_segment, perimeter_walls
 from obstacle import Circle, Obstacle, Wall
 from tom0 import ToM0Params
+from tom1 import ToM1Params
 
 SPAWN_CLEARANCE = 0.05
 SPAWN_ATTEMPTS = 10_000
@@ -26,12 +27,28 @@ def parse_tom_order(value: Any) -> int:
     return int(value)
 
 
-def tom_order_label(order: int) -> str:
+def tom_order_label(order: int | None) -> str:
+    if order is None:
+        return 'mixed ToM-0/ToM-1'
     if order < 0:
         return 'none (reactive)'
     if order == 0:
         return 'ToM-0'
+    if order == 1:
+        return 'ToM-1'
     return f'ToM-{order} (using ToM-0)'
+
+
+@dataclass
+class ToMProportions:
+    tom0: float
+    tom1: float
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.tom0 <= 1.0 and 0.0 <= self.tom1 <= 1.0):
+            raise ValueError('ToM proportions must be between 0 and 1')
+        if abs(self.tom0 + self.tom1 - 1.0) > 1e-9:
+            raise ValueError('ToM-0 and ToM-1 proportions must sum to 1')
 
 
 @dataclass
@@ -40,11 +57,13 @@ class ExperimentConfig:
     width: float = 100.0
     height: float = 100.0
     tom_order: int = 0
+    tom_proportions: ToMProportions | None = None
     agent_count: int = 400
     agent_radius: float = 0.3
     desired_speed: float = 2.0
     view_range: float = 40.0
     fov_deg: float = 360.0
+    tom1: ToM1Params = field(default_factory=ToM1Params)
     exits: list[SideExit] = field(default_factory=list)
     interior_walls: list[tuple[tuple[float, float], tuple[float, float]]] = field(default_factory=list)
     circles: list[tuple[tuple[float, float], float]] = field(default_factory=list)
@@ -56,11 +75,13 @@ class ExperimentConfig:
             width=self.width,
             height=self.height,
             tom_order=self.tom_order,
+            tom_proportions=self.tom_proportions,
             agent_count=self.agent_count,
             agent_radius=self.agent_radius,
             desired_speed=self.desired_speed,
             view_range=self.view_range,
             fov_deg=self.fov_deg,
+            tom1=self.tom1,
             exits=list(self.exits),
             interior_walls=list(self.interior_walls),
             circles=list(self.circles),
@@ -78,6 +99,7 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     agents = raw.get('agents') or {}
     perception = raw.get('perception') or {}
     obstacles = raw.get('obstacles') or {}
+    proportions = raw.get('tom_proportions')
     exits: list[SideExit] = []
     for item in raw.get('exits') or []:
         if 'side' in item:
@@ -108,11 +130,13 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
         width=float(raw.get('width', 100)),
         height=float(raw.get('height', 100)),
         tom_order=parse_tom_order(raw.get('tom_order', 0)),
+        tom_proportions=ToMProportions(**proportions) if proportions is not None else None,
         agent_count=int(agents.get('count', raw.get('agent_count', 400))),
         agent_radius=float(agents.get('radius', 0.3)),
         desired_speed=float(agents.get('desired_speed', 2.0)),
         view_range=float(perception.get('view_range', 40.0)),
         fov_deg=float(perception.get('fov_deg', 360.0)),
+        tom1=ToM1Params(**(raw.get('tom1') or {})),
         exits=exits,
         interior_walls=interior_walls,
         circles=circles,
@@ -127,6 +151,7 @@ def save_experiment(config: ExperimentConfig, path: str | Path) -> Path:
         'width': config.width,
         'height': config.height,
         'tom_order': None if config.tom_order < 0 else config.tom_order,
+        **({'tom_proportions': asdict(config.tom_proportions)} if config.tom_proportions else {}),
         'agents': {
             'count': config.agent_count,
             'radius': config.agent_radius,
@@ -136,6 +161,7 @@ def save_experiment(config: ExperimentConfig, path: str | Path) -> Path:
             'view_range': config.view_range,
             'fov_deg': config.fov_deg,
         },
+        'tom1': asdict(config.tom1),
         'exits': [
             {
                 'side': spec.side,
@@ -217,6 +243,12 @@ def build_environment(config: ExperimentConfig) -> Environment:
     for center, radius in config.circles:
         obstacles.append(Circle(center, radius))
 
+    assigned_orders = None
+    if config.tom_proportions is not None:
+        tom1_count = int(config.agent_count * config.tom_proportions.tom1 + 0.5)
+        assigned_orders = [1] * tom1_count + [0] * (config.agent_count - tom1_count)
+        shuffle(assigned_orders)
+
     agents = []
     for i, agent_pos in enumerate(spawn_positions(
             config.agent_count,
@@ -236,6 +268,7 @@ def build_environment(config: ExperimentConfig) -> Environment:
             desired_speed=np.float32(config.desired_speed),
             desired_direction=np.array([cos(angle), sin(angle)], dtype=float),
             tau=1.0,
+            tom_order=assigned_orders[i] if assigned_orders is not None else None,
         ))
 
     environment = Environment(
@@ -244,7 +277,8 @@ def build_environment(config: ExperimentConfig) -> Environment:
         agents,
         view_range=config.view_range,
         fov_rad=np.deg2rad(config.fov_deg),
-        tom_order=config.tom_order,
+        tom1=config.tom1,
+        tom_order=None if assigned_orders is not None else config.tom_order,
     )
     for ext in side_exits:
         environment.add_exit(ext)

@@ -11,7 +11,8 @@ if TYPE_CHECKING:
 
 from exit import Exit
 from perception import pairwise_visible_mask, unit_rows, visible_exit_mask
-from tom0 import ToM0Params, headings_from_beliefs
+from tom0 import ToM0Params, headings_from_beliefs, utilities
+from tom1 import ToM1Params, ToM1Reasoner
 
 
 # Newtons
@@ -35,7 +36,8 @@ class Environment:
             wander_turn: float = 1.5,
             speed_limit_factor: float = 1.5,
             tom0: ToM0Params | None = None,
-            tom_order: int = 0,
+            tom1: ToM1Params | None = None,
+            tom_order: int | None = 0,
     ) -> None:
         self.width = width
         self.height = height
@@ -47,7 +49,9 @@ class Environment:
         self.wander_turn = wander_turn
         self.speed_limit_factor = speed_limit_factor
         self.tom0 = tom0 or ToM0Params()
+        self.tom1 = ToM1Reasoner(tom1 or ToM1Params())
         self.tom_order = tom_order
+        self.has_assigned_tom_orders = any(agent.tom_order is not None for agent in agents)
         self._rng = np.random.default_rng()
         self._t = 0.0
         self._grid = {}
@@ -57,6 +61,7 @@ class Environment:
         self._belief_t = np.zeros((len(agents), 0), dtype=float)
         self._belief_mu = np.zeros((len(agents), 0, 2), dtype=float)
         self._chosen_exit = np.full(len(agents), -1, dtype=int)
+        self._tom1_changed = np.zeros(len(agents), dtype=bool)
         self.initial_agent_count = len(agents)
         self.escaped_by_exit: list[int] = []
         self.evacuation_time: float | None = None
@@ -117,6 +122,7 @@ class Environment:
         self._belief_t = self._belief_t[keep]
         self._belief_mu = self._belief_mu[keep]
         self._chosen_exit = self._chosen_exit[keep]
+        self._tom1_changed = self._tom1_changed[keep]
         if self._seen_exits.shape[0] == keep.shape[0]:
             self._seen_exits = self._seen_exits[keep]
         self._pack_agents()
@@ -140,6 +146,7 @@ class Environment:
 
     def tom0_metrics(self) -> dict:
         n = len(self.agents)
+        orders = self._agent_tom_orders if self.has_assigned_tom_orders else self._effective_orders()
         e = len(self.exits)
         seeing = 0
         with_belief = 0
@@ -170,12 +177,16 @@ class Environment:
         escaped = int(sum(self.escaped_by_exit))
         return {
             'n': n,
+            'remaining_tom0': int(((orders >= 0) & (orders != 1)).sum()),
+            'remaining_tom1': int((orders == 1).sum()),
+            'remaining_reactive': int((orders < 0).sum()),
             'initial': self.initial_agent_count,
             'escaped': escaped,
             'escaped_by_exit': list(self.escaped_by_exit),
             'seeing': seeing,
             'with_belief': with_belief,
             'memory_guided': memory_guided,
+            'tom1_changed': int(self._tom1_changed.sum()),
             'blind_committed': blind_committed,
             'no_belief': no_belief,
             'mean_sigma': mean_sigma,
@@ -206,6 +217,7 @@ class Environment:
     def _pack_agents(self) -> None:
         n = len(self.agents)
         if n == 0:
+            self.tom1.memories.clear()
             self._pos = np.empty((0, 2), dtype=float)
             self._vel = np.empty((0, 2), dtype=float)
             self._radii = np.empty(0, dtype=float)
@@ -215,13 +227,19 @@ class Environment:
             self._A = np.empty(0, dtype=float)
             self._B = np.empty(0, dtype=float)
             self._heading = np.empty((0, 2), dtype=float)
+            self._agent_tom_orders = np.empty(0, dtype=int)
             self._seen_exits = np.zeros((0, len(self.exits)), dtype=bool)
             self._has_belief = np.zeros((0, len(self.exits)), dtype=bool)
             self._belief_t = np.zeros((0, len(self.exits)), dtype=float)
             self._belief_mu = np.zeros((0, len(self.exits), 2), dtype=float)
             self._chosen_exit = np.empty(0, dtype=int)
+            self._tom1_changed = np.empty(0, dtype=bool)
             return
         self._pos = np.array([agent.position for agent in self.agents], dtype=float)
+        self._agent_tom_orders = np.array([
+            agent.tom_order if agent.tom_order is not None else 0
+            for agent in self.agents
+        ], dtype=int)
         self._vel = np.array([agent.velocity for agent in self.agents], dtype=float)
         self._radii = np.array([agent.radius for agent in self.agents], dtype=float)
         self._masses = np.array([agent.mass for agent in self.agents], dtype=float)
@@ -266,6 +284,11 @@ class Environment:
         if getattr(self, '_chosen_exit', np.array([])).shape != (n,):
             self._chosen_exit = np.full(n, -1, dtype=int)
 
+    def _effective_orders(self) -> np.ndarray:
+        if self.tom_order is None:
+            return self._agent_tom_orders
+        return np.full(len(self.agents), self.tom_order, dtype=int)
+
     def _desired_directions(self, pos: np.ndarray, dt: float) -> np.ndarray:
         n = len(pos)
         if not self.exits:
@@ -273,6 +296,7 @@ class Environment:
 
         self._ensure_beliefs()
         params = self.tom0
+        orders = self._effective_orders()
         seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
 
         for j, exit_position in enumerate(self.exits):
@@ -286,51 +310,78 @@ class Environment:
                 self.fov_rad,
             )
             seen_exits[:, j] = seen
-            if np.any(seen) and self.tom_order >= 0:
-                self._has_belief[seen, j] = True
-                self._belief_t[seen, j] = self._t
-                self._belief_mu[seen, j] = query.closest_point[seen]
+            remember = seen & (orders >= 0)
+            if np.any(remember):
+                self._has_belief[remember, j] = True
+                self._belief_t[remember, j] = self._t
+                self._belief_mu[remember, j] = query.closest_point[remember]
 
         self._seen_exits = seen_exits
+        self._tom1_changed = np.zeros(n, dtype=bool)
         visible_agents = pairwise_visible_mask(
             pos, self._heading, self.obstacles, self.view_range, self.fov_rad,
         )
-        if self.tom_order < 0:
+        reactive = orders < 0
+        seen_any = seen_exits.any(axis=1)
+        direction = np.zeros((n, 2), dtype=float)
+        chosen = np.full(n, -1, dtype=int)
+        personal = np.zeros(n, dtype=bool)
+        if np.any(reactive):
             best_distance = np.full(n, np.inf)
             best_closest = np.zeros((n, 2))
-            seen_any = seen_exits.any(axis=1)
             for j, exit_position in enumerate(self.exits):
                 query = exit_position.distances(pos)
                 closer = seen_exits[:, j] & (query.distance < best_distance)
                 best_distance = np.where(closer, query.distance, best_distance)
                 best_closest = np.where(closer[:, None], query.closest_point, best_closest)
-            toward_exit = unit_rows(best_closest - pos)
-            fallback = self._follow_or_wander(pos, seen_any, dt, visible_agents)
-            chosen = np.full(n, -1, dtype=int)
-            for j, exit_position in enumerate(self.exits):
-                query = exit_position.distances(pos)
-                pick = seen_exits[:, j] & (query.distance <= best_distance + 1e-9)
-                chosen = np.where(pick & (chosen < 0), j, chosen)
-            self._chosen_exit = chosen
-            return np.where(seen_any[:, None], toward_exit, fallback)
+                chosen = np.where(closer & reactive, j, chosen)
+            use_reactive = reactive & seen_any
+            direction[use_reactive] = unit_rows(best_closest[use_reactive] - pos[use_reactive])
+            personal |= use_reactive
 
-        age = np.maximum(self._t - self._belief_t, 0.0)
-        sigma = params.sigma0 + params.sigma_alpha * np.sqrt(age)
-        sigma = np.where(self._has_belief, sigma, np.inf)
+        if np.any(~reactive):
+            age = np.maximum(self._t - self._belief_t, 0.0)
+            sigma = params.sigma0 + params.sigma_alpha * np.sqrt(age)
+            sigma = np.where(self._has_belief, sigma, np.inf)
 
-        tom_heading, chosen, _occupancy = headings_from_beliefs(
-            pos,
-            self._belief_mu,
-            self._has_belief,
-            sigma,
-            params,
-            visible=visible_agents,
-        )
+            tom_heading, tom_chosen, occupancy = headings_from_beliefs(
+                pos, self._belief_mu, self._has_belief, sigma, params,
+                visible=visible_agents,
+            )
+            use_tom0 = (orders != 1) & ~reactive & (tom_chosen >= 0)
+            direction[use_tom0] = tom_heading[use_tom0]
+            chosen[use_tom0] = tom_chosen[use_tom0]
+            personal |= use_tom0
+        if np.any(orders == 1):
+            distance = np.linalg.norm(self._belief_mu - pos[:, None, :], axis=2)
+            base_scores = utilities(
+                distance, occupancy, sigma, self._has_belief, params,
+            )
+            tom_heading, tom1_chosen, _demand = self.tom1.choose(
+                ids=np.array([agent.idx for agent in self.agents], dtype=int),
+                pos=pos,
+                vel=self._vel,
+                mu=self._belief_mu,
+                has_belief=self._has_belief,
+                base_scores=base_scores,
+                visible_agents=visible_agents,
+                obstacles=self.obstacles,
+                view_range=self.view_range,
+                fov_rad=self.fov_rad,
+                tom0=params,
+                now=self._t,
+                observer_mask=orders == 1,
+            )
+            use_tom1 = (orders == 1) & (tom1_chosen >= 0)
+            direction[use_tom1] = tom_heading[use_tom1]
+            chosen[use_tom1] = tom1_chosen[use_tom1]
+            personal |= use_tom1
+            self._tom1_changed = use_tom1 & (tom1_chosen != tom_chosen)
         self._chosen_exit = chosen
 
-        has_any_belief = chosen >= 0
-        fallback = self._follow_or_wander(pos, has_any_belief, dt, visible_agents)
-        return np.where(has_any_belief[:, None], tom_heading, fallback)
+        informed = np.where(reactive, seen_any, self._has_belief.any(axis=1))
+        fallback = self._follow_or_wander(pos, informed, dt, visible_agents)
+        return np.where(personal[:, None], direction, fallback)
 
     def _follow_or_wander(
             self,

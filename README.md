@@ -1,6 +1,6 @@
 # crowd-tom
 
-2D crowd evacuation on a Helbing social-force model, with **limited vision** and optional **ToM-0** (beliefs about exits). Python 3.12, run with [uv](https://docs.astral.sh/uv/).
+2D crowd evacuation on a Helbing social-force model, with **limited vision**, ToM-0 exit beliefs, and ToM-1 predictions of nearby agents' exit choices. Python 3.12+, run with [uv](https://docs.astral.sh/uv/).
 
 This is meant for teammates to swap layouts, toggle ToM, and compare runs. Physics (pushing, walls) stay Helbing; ToM only changes **which exit** an agent heads toward.
 
@@ -9,7 +9,7 @@ This is meant for teammates to swap layouts, toggle ToM, and compare runs. Physi
 ```bash
 git clone git@github.com:sebapusch/crowd-tom.git
 cd crowd-tom
-git checkout tom0-environments   # current experiment branch
+git checkout tom1-environment
 uv sync
 ```
 
@@ -32,10 +32,13 @@ A pygame window opens: the room on the left, live plots on the right. Close the 
 | `two-north-one-south.yaml` | Default: two north doors, one south (no interior obstacles) |
 | `north-south.yaml`         | One north, one south                                        |
 | `four-doors.yaml`          | North, south, east, west                                    |
+| `mixed-tom.yaml`           | Four doors with equal ToM-0 and ToM-1 proportions          |
 | `pillar.yaml`              | Two north + one south, plus a bar and a circular pillar     |
 
 
-`tom_order` in YAML: `0` = ToM-0, `null` / `none` = reactive (no memory).
+`tom_order` in YAML: `1` = ToM-1, `0` = ToM-0, `null` / `none` / `reactive` = reactive. Omitting it defaults to ToM-0.
+
+For a mixed population, add `tom_proportions: {tom0: 0.6, tom1: 0.4}` at the top level. Both values must be between 0 and 1 and sum to 1. The simulator rounds the ToM-1 count to the nearest agent, assigns types randomly at spawn, and keeps each agent's type for the run. This setting takes precedence over `tom_order`. See `experiments/mixed-tom.yaml`.
 
 ## Controls
 
@@ -45,18 +48,18 @@ A pygame window opens: the room on the left, live plots on the right. Close the 
 | Space             | Pause                                                                 |
 | R                 | Reset this experiment (new spawn)                                     |
 | + / -             | Simulation speed                                                      |
-| T                 | Toggle **ToM-0** ↔ **reactive** (no memory)                           |
+| T                 | Cycle reactive / ToM-0 / ToM-1; mixed scenes also cycle back to the mixture |
 | [ / ]             | Previous / next YAML in `experiments/`                                |
 | E                 | Edit mode (pauses). Place geometry, then the crowd respawns           |
 | W / C             | In edit mode: draw a **wall** or **circle** (click-drag)              |
 | Click a wall edge | In edit mode: add a width-3 door on that side                         |
 | Backspace         | Undo last circle, interior wall, or door                              |
 | F                 | Save current layout to `experiments/last.yaml` (gitignored)           |
-| G                 | Save plot time series to `experiments/last-metrics.csv` (gitignored)  |
+| G                 | Save plot time series to `experiments/last-metrics-<mode>.csv` (gitignored) |
 | D                 | Debug: range circles, green = seeing a door, orange = remembered door |
 
 
-When the last agent leaves, the HUD shows **all escaped in Xs** and writes `experiments/last-metrics.csv`.
+When the last agent leaves, the HUD shows **all escaped in Xs** and writes a mode-specific metrics CSV.
 
 ## What the agents do
 
@@ -64,9 +67,9 @@ When the last agent leaves, the HUD shows **all escaped in Xs** and writes `expe
 
 **Reactive (**`tom_order: none`**):** walk to the nearest *currently* visible door. If none, follow someone who sees a door, else wander.
 
-**ToM-0 (**`tom_order: 0`**):** on sight, store last-seen time and door position. Uncertainty grows as \sigma_0 + \alpha\sqrt{\Delta t}. Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. If they have never seen any door, they follow a committed agent.
+**ToM-0 (**`tom_order: 0`**):** on sight, store last-seen time and door position. Uncertainty grows as `sigma0 + sigma_alpha * sqrt(age)`. Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. If they have never seen any door, they follow a visible informed agent.
 
-ToM-1 is not implemented. **T** only switches reactive vs ToM-0.
+**ToM-1 (**`tom_order: 1`**):** start with each agent's own ToM-0 score. For currently visible agents within `model_range`, estimate their ToM-0 choices using only the observer's exit memories, observed positions, and visible velocity as a heading proxy. Each observer keeps a bounded, expiring record of exits it inferred other agents saw. Predicted exit demand adds a negative, confidence-weighted score term. ToM-1 uses the same forces, movement, and follow/wander fallback as ToM-0. These are heuristic predictions, not direct reads of other agents' private memories.
 
 In an empty rectangle, walking toward a remembered door often **keeps it inside range 40**, so “unseen choice” can stay 0. Pillars, extra walls, or leaving range make ToM-0 visible (orange debug lines, “ToM-0 unseen choice” in the HUD).
 
@@ -78,7 +81,16 @@ Copy a file under `experiments/` or press **F** in the editor. Perimeter walls a
 name: my-hall
 width: 100
 height: 100
-tom_order: 0          # 0 = ToM-0, omit or null = reactive
+tom_order: 1          # 1 = ToM-1, 0 = ToM-0, null = reactive
+tom1:                 # optional; these are the defaults
+  model_range: 12.0
+  memory_agents: 16
+  memory_horizon: 30.0
+  confidence_decay: 10.0
+  knowledge_prior: 0.2
+  uncertainty_prior: 0.5
+  choice_temperature: 1.0
+  demand_weight: -1.0
 agents:
   count: 400
   radius: 0.3
@@ -102,9 +114,11 @@ obstacles:
 
 - Simulation time (not wall-clock; **+**/**-** change how fast time advances)
 - Remaining / escaped per door
+- Remaining ToM-0 and ToM-1 agents, both in the HUD and in the live graph. The graph also shows total remaining and escaped agents. Press **G** to export the time series, including each type's remaining count.
 - Seeing a door vs holding a belief vs never seen
 - **ToM-0 unseen choice:** heading to a remembered door that is out of sight (should stay 0 in reactive mode)
-- Right panel: remaining vs escaped, and ToM-state series over time
+- **ToM-1 changed exit:** agents whose current ToM-1 choice differs from their ToM-0 choice
+- Right panel: remaining agents by type and ToM-state series over time. In a mixed scene, the type counts follow the agents' assigned types even when **T** temporarily overrides their behavior.
 
 
 
@@ -118,6 +132,7 @@ obstacles:
 | `layout.py`               | Doors on walls → perimeter segments               |
 | `environment.py`          | Time step, forces, ToM vs reactive choice         |
 | `tom0.py`                 | Belief scoring (distance, occupancy, uncertainty) |
+| `tom1.py`                 | Limited observation memory and predicted demand   |
 | `perception.py`           | Range, FOV, line of sight                         |
 | `agent.py`                | Helbing agent parameters                          |
 | `obstacle.py` / `exit.py` | Walls, circles, exit crossing                     |
@@ -127,17 +142,8 @@ obstacles:
 
 
 
-## Commit / push (for this branch)
-
-Do **not** commit `experiments/last.yaml` or `experiments/last-metrics.csv` (gitignored run output).
+## Tests
 
 ```bash
-git checkout tom0-environments
-git add README.md .gitignore pyproject.toml uv.lock \
-  main.py environment.py experiment.py layout.py plots.py tom0.py perception.py \
-  experiments/*.yaml
-git status   # confirm no last.yaml / last-metrics.csv
-git commit -m "Add ToM-0, YAML experiments, editor, and live metrics."
-git push -u origin tom0-environments
+uv run python -m unittest discover -s tests -v
 ```
-

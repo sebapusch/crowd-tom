@@ -29,6 +29,19 @@ MAX_PHYSICS_STEPS = 2
 EXPERIMENT_DIR = Path(__file__).parent / 'experiments'
 DEFAULT_EXPERIMENT = EXPERIMENT_DIR / 'two-north-one-south.yaml'
 
+
+def _metrics_path(tom_order: int | None) -> Path:
+    if tom_order is None:
+        mode = 'mixed'
+    elif tom_order < 0:
+        mode = 'reactive'
+    elif tom_order == 1:
+        mode = 'tom-1'
+    else:
+        mode = 'tom-0'
+    return EXPERIMENT_DIR / f'last-metrics-{mode}.csv'
+
+
 COLORS = {
     'agent': (0, 0, 255),
     'exit': (0, 255, 0),
@@ -89,12 +102,14 @@ def _draw_hud(
     mode = f'EDIT {place_mode}' if edit_mode else 'run'
 
     lines = [
-        f"{config.name}   {tom_order_label(config.tom_order)}   {mode}",
+        f"{config.name}   {tom_order_label(environment.tom_order)}   {mode}",
         timer,
         f"x{time_scale:.2f}   remaining {stats['n']}/{stats['initial']}",
+        f"ToM-0 {stats['remaining_tom0']}   ToM-1 {stats['remaining_tom1']}   reactive {stats['remaining_reactive']}",
         f"escaped {stats['escaped']}   ({exits})",
         f"seeing: {stats['seeing']}   know: {stats['with_belief']}   never seen: {stats['no_belief']}",
         f"ToM-0 unseen choice: {stats['memory_guided']}  peak {stats['peak_memory_guided']}",
+        f"ToM-1 changed exit: {stats['tom1_changed']}",
         f"blind committed: {stats['blind_committed']}   {stats['blind_committed_s']:.1f} person-s",
     ]
     y = 12
@@ -212,11 +227,12 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
     pygame.init()
     pygame.font.init()
     pygame.display.set_caption('crowd-tom')
-    font = pygame.font.SysFont('Comic Sans MS', 18)
+    font = pygame.font.SysFont(None, 18)
     screen = pygame.display.set_mode(WINDOW_SIZE, pygame.DOUBLEBUF, vsync=0)
     clock = pygame.time.Clock()
     sprite = _agent_sprite(max(1, int(config.agent_radius * scale)))
     history = History()
+    history.record(environment.tom0_metrics())
     reported_done = False
     time_scale = 1.0
     running = True
@@ -236,6 +252,7 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
         environment = build_environment(config)
         sprite = _agent_sprite(max(1, int(config.agent_radius * scale)))
         history.clear()
+        history.record(environment.tom0_metrics())
         reported_done = False
         accumulator = 0.0
 
@@ -259,8 +276,20 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
                 elif event.key == pygame.K_d:
                     debug = not debug
                 elif event.key == pygame.K_t:
-                    config.tom_order = 0 if config.tom_order < 0 else -1
-                    environment.tom_order = config.tom_order
+                    if config.tom_proportions is not None:
+                        current = environment.tom_order
+                        environment.tom_order = (
+                            -1 if current is None else 0 if current < 0
+                            else 1 if current == 0 else None
+                        )
+                    else:
+                        config.tom_order = (
+                            0 if config.tom_order < 0
+                            else 1 if config.tom_order == 0
+                            else -1
+                        )
+                        environment.tom_order = config.tom_order
+                    history.record(environment.tom0_metrics())
                 elif event.key == pygame.K_e:
                     edit_mode = not edit_mode
                     paused = True
@@ -281,7 +310,7 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
                     path = save_experiment(config, EXPERIMENT_DIR / 'last.yaml')
                     print(f'saved experiment {path}')
                 elif event.key == pygame.K_g:
-                    path = EXPERIMENT_DIR / 'last-metrics.csv'
+                    path = _metrics_path(None if config.tom_proportions else config.tom_order)
                     path.write_text(history.to_csv())
                     print(f'saved metrics {path}')
                 elif event.key == pygame.K_BACKSPACE and edit_mode:
@@ -336,7 +365,7 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
                 f"escaped {stats['escaped_by_exit']} | "
                 f"peak memory-guided {stats['peak_memory_guided']}"
             )
-            csv_path = EXPERIMENT_DIR / 'last-metrics.csv'
+            csv_path = _metrics_path(None if config.tom_proportions else config.tom_order)
             csv_path.write_text(history.to_csv())
             reported_done = True
 

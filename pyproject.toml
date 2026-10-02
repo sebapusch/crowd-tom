@@ -1,7 +1,7 @@
 [project]
 name = "crowd-tom"
 version = "0.1.0"
-description = "Helbing crowd evacuation with limited vision and optional ToM-0 exit beliefs"
+description = "Helbing crowd evacuation with reactive, ToM-0, and ToM-1 choices"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

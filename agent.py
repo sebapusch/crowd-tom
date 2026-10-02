@@ -22,8 +22,10 @@ class Agent:
                  velocity: np.ndarray,
                  desired_speed: np.ndarray,
                  desired_direction: np.ndarray,
-                 tau: float):
+                 tau: float,
+                 tom_order: int | None = None):
         self.idx = idx
+        self.tom_order = tom_order
         self.mass = mass
         self.radius = radius
         self.social_repulsion = social_repulsion
