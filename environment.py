@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import log
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,12 @@ F_CUT = 1
 COMPRESSION_COEFF = 1.2e5
 SLIDING_COEFF = 2.4e5
 MIN_DIST = 1e-12
+
+
+@dataclass(frozen=True)
+class ExitSign:
+    position: tuple[float, float]
+    exit_index: int
 
 
 class Environment:
@@ -43,6 +50,7 @@ class Environment:
         self.height = height
         self.agents: list[Agent] = agents
         self.exits: list[Exit] = []
+        self.signs: list[ExitSign] = []
         self.obstacles: list[Obstacle] = []
         self.view_range = view_range
         self.fov_rad = fov_rad
@@ -74,6 +82,11 @@ class Environment:
         self.exits.append(exit_)
         self.escaped_by_exit.append(0)
         self._ensure_beliefs()
+
+    def add_sign(self, sign: ExitSign) -> None:
+        if not 0 <= sign.exit_index < len(self.exits):
+            raise ValueError(f'Sign refers to missing exit {sign.exit_index}')
+        self.signs.append(sign)
 
     def add_obstacle(self, obstacle: Obstacle) -> None:
         self.obstacles.append(obstacle)
@@ -298,6 +311,15 @@ class Environment:
         params = self.tom0
         orders = self._effective_orders()
         seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
+        signed_exits = np.zeros_like(seen_exits)
+
+        for sign in self.signs:
+            sign_target = np.broadcast_to(np.asarray(sign.position, dtype=float), pos.shape)
+            visible = visible_exit_mask(
+                pos, self._heading, sign_target, self.obstacles,
+                self.view_range, self.fov_rad,
+            )
+            signed_exits[:, sign.exit_index] |= visible
 
         for j, exit_position in enumerate(self.exits):
             query = exit_position.distances(pos)
@@ -310,7 +332,7 @@ class Environment:
                 self.fov_rad,
             )
             seen_exits[:, j] = seen
-            remember = seen & (orders >= 0)
+            remember = (seen | signed_exits[:, j]) & (orders >= 0)
             if np.any(remember):
                 self._has_belief[remember, j] = True
                 self._belief_t[remember, j] = self._t
@@ -322,7 +344,8 @@ class Environment:
             pos, self._heading, self.obstacles, self.view_range, self.fov_rad,
         )
         reactive = orders < 0
-        seen_any = seen_exits.any(axis=1)
+        available_exits = seen_exits | signed_exits
+        available_any = available_exits.any(axis=1)
         direction = np.zeros((n, 2), dtype=float)
         chosen = np.full(n, -1, dtype=int)
         personal = np.zeros(n, dtype=bool)
@@ -331,11 +354,11 @@ class Environment:
             best_closest = np.zeros((n, 2))
             for j, exit_position in enumerate(self.exits):
                 query = exit_position.distances(pos)
-                closer = seen_exits[:, j] & (query.distance < best_distance)
+                closer = available_exits[:, j] & (query.distance < best_distance)
                 best_distance = np.where(closer, query.distance, best_distance)
                 best_closest = np.where(closer[:, None], query.closest_point, best_closest)
                 chosen = np.where(closer & reactive, j, chosen)
-            use_reactive = reactive & seen_any
+            use_reactive = reactive & available_any
             direction[use_reactive] = unit_rows(best_closest[use_reactive] - pos[use_reactive])
             personal |= use_reactive
 
@@ -379,7 +402,7 @@ class Environment:
             self._tom1_changed = use_tom1 & (tom1_chosen != tom_chosen)
         self._chosen_exit = chosen
 
-        informed = np.where(reactive, seen_any, self._has_belief.any(axis=1))
+        informed = np.where(reactive, available_any, self._has_belief.any(axis=1))
         fallback = self._follow_or_wander(pos, informed, dt, visible_agents)
         return np.where(personal[:, None], direction, fallback)
 

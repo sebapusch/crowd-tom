@@ -1,0 +1,40 @@
+# A west-side arrival crowd crosses a ticket-gate bank toward three platform entrances.
+# The central entrance is narrow; signs reveal the farther north and south options.
+# Circles stand in for gate machines and pillars without creating impassable lanes.
+name: station-concourse
+width: 70
+height: 60
+tom_proportions: {tom0: 0.9, tom1: 0.1}
+agents:
+  count: 150
+  radius: 0.3
+  desired_speed: 2.0
+  spawn_region:
+    min: [5, 20]
+    max: [23, 40]
+perception:
+  view_range: 27
+  fov_deg: 360
+exits:
+  - {side: east, center: 4, width: 3.5, name: north_platform}
+  - {side: east, center: 30, width: 2, name: central_platform}
+  - {side: east, center: 56, width: 3.5, name: south_platform}
+signs:
+  - {position: [20, 14], exit_index: 0}
+  - {position: [20, 30], exit_index: 0}
+  - {position: [20, 46], exit_index: 0}
+  - {position: [22, 14], exit_index: 1}
+  - {position: [22, 30], exit_index: 1}
+  - {position: [22, 46], exit_index: 1}
+  - {position: [24, 14], exit_index: 2}
+  - {position: [24, 30], exit_index: 2}
+  - {position: [24, 46], exit_index: 2}
+obstacles:
+  walls: []
+  circles:
+    - {center: [34, 18], radius: 1.2}
+    - {center: [34, 25], radius: 1.2}
+    - {center: [34, 35], radius: 1.2}
+    - {center: [34, 42], radius: 1.2}
+    - {center: [52, 21], radius: 2.5}
+    - {center: [52, 39], radius: 2.5}

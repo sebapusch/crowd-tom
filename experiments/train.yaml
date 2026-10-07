@@ -7,13 +7,19 @@ agents:
   radius: 0.3
   desired_speed: 2.0
 perception:
-  view_range: 25
+  view_range: 30
   fov_deg: 360
 exits:
   - {side: east, center: 10, width: 3, name: door_1}
   - {side: east, center: 20, width: 3, name: door_2}
   - {side: east, center: 30, width: 3, name: door_3}
   - {side: east, center: 40, width: 3, name: door_4}
+signs:
+  - {position: [15, 10], exit_index: 3}
+  - {position: [15, 20], exit_index: 2}
+  - {position: [15, 30], exit_index: 1}
+  - {position: [15, 40], exit_index: 0}
+
 obstacles:
   walls: []
   circles: []

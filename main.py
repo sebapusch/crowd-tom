@@ -1,6 +1,5 @@
 import argparse
 import os
-from math import pi
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "1")
@@ -26,6 +25,14 @@ from plots import History, SIM_SIZE, WINDOW_SIZE, draw_plots
 WALL_WIDTH = 20
 EXIT_WIDTH = int(WALL_WIDTH * 1.5)
 MAX_PHYSICS_STEPS = 2
+CHOICE_COLORS = (
+    (180, 35, 55),
+    (105, 45, 185),
+    (205, 115, 0),
+    (0, 130, 135),
+    (145, 80, 25),
+    (70, 120, 35),
+)
 EXPERIMENT_DIR = Path(__file__).parent / 'experiments'
 DEFAULT_EXPERIMENT = EXPERIMENT_DIR / 'two-north-one-south.yaml'
 
@@ -43,25 +50,32 @@ def _metrics_path(tom_order: int | None) -> Path:
 
 
 COLORS = {
-    'agent': (0, 0, 255),
+    'tom0': (0, 80, 220),
+    'tom1': (230, 100, 0),
+    'reactive': (125, 70, 160),
     'exit': (0, 255, 0),
+    'sign': (0, 140, 140),
     'wall': (0, 0, 0),
     'text': (0, 0, 0),
-    'debug': (255, 0, 0),
-    'fov': (0, 170, 255),
-    'seen': (0, 200, 120),
-    'memory': (255, 140, 0),
     'background': (255, 255, 255),
     'edit': (180, 0, 180),
     'preview': (120, 80, 180),
 }
 
 
-def _agent_sprite(radius_px: int) -> pygame.Surface:
+def _agent_sprite(radius_px: int, color: tuple[int, int, int]) -> pygame.Surface:
     size = max(2, radius_px * 2)
     sprite = pygame.Surface((size, size), pygame.SRCALPHA)
-    pygame.draw.circle(sprite, COLORS['agent'], (size // 2, size // 2), radius_px)
+    pygame.draw.circle(sprite, color, (size // 2, size // 2), radius_px)
     return sprite
+
+
+def _agent_sprites(radius_px: int) -> dict[int, pygame.Surface]:
+    return {
+        -1: _agent_sprite(radius_px, COLORS['reactive']),
+        0: _agent_sprite(radius_px, COLORS['tom0']),
+        1: _agent_sprite(radius_px, COLORS['tom1']),
+    }
 
 
 def _exit_name(environment: Environment, index: int) -> str:
@@ -116,6 +130,15 @@ def _draw_hud(
     for line in lines:
         screen.blit(font.render(line, False, COLORS['text']), (12, y))
         y += 24
+    x = 12
+    for label, color in (
+        ('ToM-0', COLORS['tom0']),
+        ('ToM-1', COLORS['tom1']),
+        ('reactive', COLORS['reactive']),
+    ):
+        pygame.draw.circle(screen, color, (x + 5, y + 7), 5)
+        screen.blit(font.render(label, False, COLORS['text']), (x + 15, y))
+        x += 95
 
 
 def draw(
@@ -126,7 +149,7 @@ def draw(
         time_scale: float,
         debug: bool,
         font: pygame.font.Font,
-        agent_sprite: pygame.Surface,
+        agent_sprites: dict[int, pygame.Surface],
         history: History,
         edit_mode: bool,
         place_mode: str,
@@ -145,12 +168,24 @@ def draw(
     for ext in environment.exits:
         pygame.draw.line(screen, COLORS['exit'], ext.start * scale, ext.end * scale, EXIT_WIDTH)
 
-    blit_pos = []
-    for agent in environment.agents:
+    for sign in environment.signs:
+        x, y = (int(value * scale) for value in sign.position)
+        pygame.draw.polygon(
+            screen, COLORS['sign'],
+            [(x, y - 9), (x + 9, y), (x, y + 9), (x - 9, y)],
+        )
+        label = font.render(str(sign.exit_index + 1), True, COLORS['background'])
+        screen.blit(label, label.get_rect(center=(x, y)))
+
+    blits = []
+    orders = environment._effective_orders()
+    for i, agent in enumerate(environment.agents):
         x, y = agent.position
-        blit_pos.append(agent_sprite.get_rect(center=(x * scale, y * scale)))
-    if blit_pos:
-        screen.blits([(agent_sprite, rect) for rect in blit_pos])
+        order = int(orders[i])
+        sprite = agent_sprites[1 if order == 1 else -1 if order < 0 else 0]
+        blits.append((sprite, sprite.get_rect(center=(x * scale, y * scale))))
+    if blits:
+        screen.blits(blits)
 
     if edit_mode and drag_start is not None and mouse_world is not None:
         if place_mode == 'circle':
@@ -168,49 +203,44 @@ def draw(
             )
 
     if debug:
-        _draw_perception_debug(screen, environment, scale)
+        _draw_choice_debug(screen, environment, scale, font)
 
     draw_plots(screen, history, font, environment.initial_agent_count)
 
 
-def _draw_perception_debug(screen: SurfaceType, environment: Environment, scale: float) -> None:
-    if len(environment.agents) == 0:
-        return
+def _draw_choice_debug(
+        screen: SurfaceType,
+        environment: Environment,
+        scale: float,
+        font: pygame.font.Font,
+) -> None:
+    previous_clip = screen.get_clip()
+    screen.set_clip(pygame.Rect(0, 0, SIM_SIZE, SIM_SIZE))
+    for j, ext in enumerate(environment.exits):
+        color = CHOICE_COLORS[j % len(CHOICE_COLORS)]
+        pygame.draw.line(screen, color, ext.start * scale, ext.end * scale, 6)
+        center = ((ext.start + ext.end) * 0.5 * scale).astype(int)
+        marker = (int(np.clip(center[0], 12, SIM_SIZE - 12)),
+                  int(np.clip(center[1], 12, SIM_SIZE - 12)))
+        pygame.draw.circle(screen, color, marker, 11)
+        label = font.render(str(j + 1), True, COLORS['background'])
+        screen.blit(label, label.get_rect(center=marker))
 
-    n_preview = min(8, len(environment.agents))
-    full_circle = environment.fov_rad >= 2.0 * pi - 1e-6
-    for i in range(n_preview):
-        origin = environment._pos[i]
-        origin_px = (float(origin[0] * scale), float(origin[1] * scale))
-        if full_circle:
-            pygame.draw.circle(
-                screen, COLORS['fov'], origin_px,
-                int(environment.view_range * scale), 1,
-            )
-
-    seen = environment._seen_exits
-    has_belief = getattr(environment, '_has_belief', None)
-    if seen.size == 0 and (has_belief is None or has_belief.size == 0):
-        return
     for i, agent in enumerate(environment.agents):
-        origin = (float(agent.position[0] * scale), float(agent.position[1] * scale))
-        for j, ext in enumerate(environment.exits):
-            currently_seen = seen.size > 0 and j < seen.shape[1] and seen[i, j]
-            remembered = (
-                has_belief is not None and has_belief.size > 0
-                and j < has_belief.shape[1] and has_belief[i, j]
-            )
-            if currently_seen:
-                closest = np.asarray(ext.distances(agent.position).closest_point).reshape(2)
-                target, color = closest, COLORS['seen']
-            elif remembered:
-                target, color = environment._belief_mu[i, j], COLORS['memory']
-            else:
-                continue
-            pygame.draw.line(
-                screen, color, origin,
-                (float(target[0] * scale), float(target[1] * scale)), 1,
-            )
+        chosen = int(environment._chosen_exit[i])
+        if not 0 <= chosen < len(environment.exits):
+            continue
+        direction = environment._heading[i]
+        if np.linalg.norm(direction) < 1e-9:
+            continue
+        color = CHOICE_COLORS[chosen % len(CHOICE_COLORS)]
+        origin = agent.position * scale
+        tip = origin + direction * 25
+        left = tip - direction * 7 + np.array([-direction[1], direction[0]]) * 5
+        right = tip - direction * 7 - np.array([-direction[1], direction[0]]) * 5
+        pygame.draw.line(screen, color, origin + direction * 5, tip, 2)
+        pygame.draw.polygon(screen, color, [tip, left, right])
+    screen.set_clip(previous_clip)
 
 
 def _world_from_mouse(pos: tuple[int, int], scale: float) -> tuple[float, float] | None:
@@ -230,7 +260,7 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
     font = pygame.font.SysFont(None, 18)
     screen = pygame.display.set_mode(WINDOW_SIZE, pygame.DOUBLEBUF, vsync=0)
     clock = pygame.time.Clock()
-    sprite = _agent_sprite(max(1, int(config.agent_radius * scale)))
+    sprites = _agent_sprites(max(1, int(config.agent_radius * scale)))
     history = History()
     history.record(environment.tom0_metrics())
     reported_done = False
@@ -248,9 +278,9 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
         experiment_index = catalog.index(config.source_path)
 
     def reset() -> None:
-        nonlocal environment, reported_done, accumulator, sprite
+        nonlocal environment, reported_done, accumulator, sprites
         environment = build_environment(config)
-        sprite = _agent_sprite(max(1, int(config.agent_radius * scale)))
+        sprites = _agent_sprites(max(1, int(config.agent_radius * scale)))
         history.clear()
         history.record(environment.tom0_metrics())
         reported_done = False
@@ -322,6 +352,10 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
                         reset()
                     elif config.exits:
                         config.exits.pop()
+                        config.signs = [
+                            sign for sign in config.signs
+                            if sign.exit_index < len(config.exits)
+                        ]
                         reset()
 
             elif event.type == pygame.MOUSEBUTTONDOWN and edit_mode and event.button == 1:
@@ -370,7 +404,7 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
             reported_done = True
 
         draw(
-            screen, environment, config, scale, time_scale, debug, font, sprite,
+            screen, environment, config, scale, time_scale, debug, font, sprites,
             history, edit_mode, place_mode, drag_start, mouse_world,
         )
         pygame.display.flip()

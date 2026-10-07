@@ -1,0 +1,24 @@
+# Train platform: agents begin near the two narrow doors.
+# Wider doors farther along the train offer an alternative to a local queue.
+name: train-uneven-doors
+width: 50
+height: 50
+tom_proportions: {tom0: 0.9, tom1: 0.1}
+agents:
+  count: 180
+  radius: 0.3
+  desired_speed: 2.0
+  spawn_region:
+    min: [3, 3]
+    max: [30, 23]
+perception:
+  view_range: 70
+  fov_deg: 360
+exits:
+  - {side: east, center: 8, width: 1.5, name: narrow_1}
+  - {side: east, center: 19, width: 1.5, name: narrow_2}
+  - {side: east, center: 30, width: 3, name: standard}
+  - {side: east, center: 41, width: 4.5, name: wide}
+obstacles:
+  walls: []
+  circles: []
