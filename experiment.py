@@ -141,6 +141,10 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
         radius = item['radius'] if isinstance(item, dict) else item[1]
         circles.append((_as_point(center), float(radius)))
 
+    view_range = float(perception.get('view_range', 40.0))
+    tom1_values = dict(raw.get('tom1') or {})
+    tom1_values.pop('model_range', None)  # Legacy YAML field; perception controls all view radii.
+
     return ExperimentConfig(
         name=str(raw.get('name', path.stem)),
         width=float(raw.get('width', 100)),
@@ -154,9 +158,9 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
             minimum=_as_point(agents['spawn_region']['min']),
             maximum=_as_point(agents['spawn_region']['max']),
         ) if agents.get('spawn_region') is not None else None),
-        view_range=float(perception.get('view_range', 40.0)),
+        view_range=view_range,
         fov_deg=float(perception.get('fov_deg', 360.0)),
-        tom1=ToM1Params(**(raw.get('tom1') or {})),
+        tom1=ToM1Params(model_range=view_range, **tom1_values),
         exits=exits,
         signs=[
             ExitSign(position=_as_point(item['position']), exit_index=int(item['exit_index']))
@@ -189,7 +193,7 @@ def save_experiment(config: ExperimentConfig, path: str | Path) -> Path:
             'view_range': config.view_range,
             'fov_deg': config.fov_deg,
         },
-        'tom1': asdict(config.tom1),
+        'tom1': {key: value for key, value in asdict(config.tom1).items() if key != 'model_range'},
         'exits': [
             {
                 'side': spec.side,

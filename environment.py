@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import log
 from typing import TYPE_CHECKING
 
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from exit import Exit
 from perception import pairwise_visible_mask, unit_rows, visible_exit_mask
-from tom0 import ToM0Params, headings_from_beliefs, utilities
+from tom0 import ToM0Params, headings_from_beliefs, uncertainty, utilities
 from tom1 import ToM1Params, ToM1Reasoner
 
 
@@ -46,6 +46,8 @@ class Environment:
             tom1: ToM1Params | None = None,
             tom_order: int | None = 0,
     ) -> None:
+        if not np.isfinite(view_range) or view_range <= 0:
+            raise ValueError('view_range must be positive and finite')
         self.width = width
         self.height = height
         self.agents: list[Agent] = agents
@@ -56,8 +58,8 @@ class Environment:
         self.fov_rad = fov_rad
         self.wander_turn = wander_turn
         self.speed_limit_factor = speed_limit_factor
-        self.tom0 = tom0 or ToM0Params()
-        self.tom1 = ToM1Reasoner(tom1 or ToM1Params())
+        self.tom0 = replace(tom0 or ToM0Params(), occupancy_range=view_range)
+        self.tom1 = ToM1Reasoner(replace(tom1 or ToM1Params(), model_range=view_range))
         self.tom_order = tom_order
         self.has_assigned_tom_orders = any(agent.tom_order is not None for agent in agents)
         self._rng = np.random.default_rng()
@@ -166,7 +168,7 @@ class Environment:
         memory_guided = 0
         blind_committed = 0
         no_belief = n
-        mean_sigma = 0.0
+        mean_uncertainty = 0.0
         mean_age = 0.0
         max_commit_distance = 0.0
         if n > 0 and e > 0 and self._has_belief.shape == (n, e):
@@ -182,9 +184,8 @@ class Environment:
                 chosen = self._chosen_exit[rows]
                 memory_guided = int((~self._seen_exits[rows, chosen]).sum())
                 age = np.maximum(self._t - self._belief_t[rows, chosen], 0.0)
-                sigma = self.tom0.sigma0 + self.tom0.sigma_alpha * np.sqrt(age)
                 mean_age = float(age.mean())
-                mean_sigma = float(sigma.mean())
+                mean_uncertainty = float(uncertainty(age, self.tom0.uncertainty_time).mean())
                 commit_dist = np.linalg.norm(self._belief_mu[rows, chosen] - self._pos[rows], axis=1)
                 max_commit_distance = float(commit_dist.max())
         escaped = int(sum(self.escaped_by_exit))
@@ -202,7 +203,7 @@ class Environment:
             'tom1_changed': int(self._tom1_changed.sum()),
             'blind_committed': blind_committed,
             'no_belief': no_belief,
-            'mean_sigma': mean_sigma,
+            'mean_uncertainty': mean_uncertainty,
             'mean_age': mean_age,
             'max_commit_distance': max_commit_distance,
             'peak_memory_guided': self.peak_memory_guided,
@@ -364,11 +365,8 @@ class Environment:
 
         if np.any(~reactive):
             age = np.maximum(self._t - self._belief_t, 0.0)
-            sigma = params.sigma0 + params.sigma_alpha * np.sqrt(age)
-            sigma = np.where(self._has_belief, sigma, np.inf)
-
             tom_heading, tom_chosen, occupancy = headings_from_beliefs(
-                pos, self._belief_mu, self._has_belief, sigma, params,
+                pos, self._belief_mu, self._has_belief, age, params,
                 visible=visible_agents,
             )
             use_tom0 = (orders != 1) & ~reactive & (tom_chosen >= 0)
@@ -378,7 +376,7 @@ class Environment:
         if np.any(orders == 1):
             distance = np.linalg.norm(self._belief_mu - pos[:, None, :], axis=2)
             base_scores = utilities(
-                distance, occupancy, sigma, self._has_belief, params,
+                distance, occupancy, age, self._has_belief, params,
             )
             tom_heading, tom1_chosen, _demand = self.tom1.choose(
                 ids=np.array([agent.idx for agent in self.agents], dtype=int),

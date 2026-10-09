@@ -35,9 +35,12 @@ A pygame window opens: the room on the left, live plots on the right. Close the 
 | `mixed-tom.yaml`           | Four doors with equal ToM-0 and ToM-1 proportions          |
 | `pillar.yaml`              | Two north + one south, plus a bar and a circular pillar     |
 | `station-concourse.yaml`   | Clustered arrivals, ticket-gate obstacles, three signed platform entrances |
+| `tom1-demand-contrast.yaml` | Diagnostic: ToM-0 favors the left exit; ToM-1 splits demand between two visible exits |
 
 
 `tom_order` in YAML: `1` = ToM-1, `0` = ToM-0, `null` / `none` / `reactive` = reactive. Omitting it defaults to ToM-0.
+
+To see the ToM difference directly, run `uv run python main.py experiments/tom1-demand-contrast.yaml` and press **D** for colored exit-choice arrows. The scene starts in ToM-1 mode; press **T** twice to reach ToM-0 on the same crowd. Its ToM-1 parameters deliberately make the predicted-demand effect easy to see.
 
 For a mixed population, add `tom_proportions: {tom0: 0.6, tom1: 0.4}` at the top level. Both values must be between 0 and 1 and sum to 1. The simulator rounds the ToM-1 count to the nearest agent, assigns types randomly at spawn, and keeps each agent's type for the run. This setting takes precedence over `tom_order`. See `experiments/mixed-tom.yaml`.
 
@@ -64,15 +67,15 @@ When the last agent leaves, the HUD shows **all escaped in Xs** and writes a mod
 
 ## What the agents do
 
-**Perception:** 360° view, range **40**, blocked by walls/circles. Unseen doors are not “visible”.
+**Perception:** 360° view, range **40**, blocked by walls/circles. The configured `perception.view_range` also sets the ToM-0 cone radius and ToM-1 modeling radius. Unseen doors are not “visible”.
 
 **Exit signs:** a sign names an exit by its zero-based index in the YAML `exits` list. An agent that can see the sign learns that exit's location even when the exit itself is out of sight. Walls, range, and field of view also apply to signs. ToM-0 and ToM-1 agents remember the information; reactive agents use it only while the sign is visible. Signs appear as numbered teal diamonds.
 
 **Reactive (**`tom_order: none`**):** walk to the nearest *currently* visible door. If none, follow someone who sees a door, else wander.
 
-**ToM-0 (**`tom_order: 0`**):** on sight, store last-seen time and door position. Uncertainty grows as `sigma0 + sigma_alpha * sqrt(age)`. Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. If they have never seen any door, they follow a visible informed agent.
+**ToM-0 (**`tom_order: 0`**):** on sight, store last-seen time and door position. Uncertainty grows as `age / (age + uncertainty_time)`, reaching 0.5 at `uncertainty_time` seconds. Distance uses the penalty `sqrt(1 + distance / distance_scale) - 1`, with a default `distance_scale` of 10 metres. Observed density in the cone uses `density / (density + occupancy_half_density)`, with a default half-penalty density of 0.04 agents per square metre. Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. If they have never seen any door, they follow a visible informed agent.
 
-**ToM-1 (**`tom_order: 1`**):** start with each agent's own ToM-0 score. For currently visible agents within `model_range`, estimate their ToM-0 choices using only the observer's exit memories, observed positions, and visible velocity as a heading proxy. Each observer keeps a bounded, expiring record of exits it inferred other agents saw. Predicted exit demand adds a negative, confidence-weighted score term. ToM-1 uses the same forces, movement, and follow/wander fallback as ToM-0. These are heuristic predictions, not direct reads of other agents' private memories.
+**ToM-1 (**`tom_order: 1`**):** start with each agent's own ToM-0 score. For currently visible agents within `perception.view_range`, estimate their ToM-0 choices using only the observer's exit memories, observed positions, and visible velocity as a heading proxy. Each observer keeps a bounded, expiring record of exits it inferred other agents saw. Predicted exit demand adds a negative, confidence-weighted score term. ToM-1 uses the same forces, movement, and follow/wander fallback as ToM-0. These are heuristic predictions, not direct reads of other agents' private memories.
 
 In an empty rectangle, walking toward a remembered door often **keeps it inside range 40**, so “unseen choice” can stay 0. Pillars, extra walls, or leaving range make ToM-0's unseen choices visible in the HUD. In debug mode, each arrow points along an agent's chosen heading and matches the color of its selected exit; agents following others or wandering have no exit-choice arrow.
 
@@ -86,14 +89,14 @@ width: 100
 height: 100
 tom_order: 1          # 1 = ToM-1, 0 = ToM-0, null = reactive
 tom1:                 # optional; these are the defaults
-  model_range: 12.0
   memory_agents: 16
   memory_horizon: 30.0
   confidence_decay: 10.0
   knowledge_prior: 0.2
   uncertainty_prior: 0.5
   choice_temperature: 1.0
-  demand_weight: -1.0
+  demand_half_count: 2.0
+  demand_weight: -0.5
 agents:
   count: 400
   radius: 0.3

@@ -7,16 +7,30 @@ import numpy as np
 from perception import EPSILON, unit_rows
 
 
+def profile_greedy() -> ToM0Params:
+    return ToM0Params(
+        uncertainty_time=1.0,
+    )
+
+
 @dataclass(frozen=True)
 class ToM0Params:
-    sigma0: float = 0.1
-    sigma_alpha: float = 0.5
-    sigma_ref: float = 8.0
+    uncertainty_time: float = 30.0
+    distance_scale: float = 10.0
     w_distance: float = -1.0
     w_occupancy: float = -1.0
     w_uncertainty: float = -1.0
     occupancy_range: float = 12.0
     occupancy_fov_rad: float = np.deg2rad(60.0)
+    occupancy_half_density: float = 0.04
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.uncertainty_time) or self.uncertainty_time <= 0:
+            raise ValueError("ToM0 uncertainty_time must be positive and finite")
+        if not np.isfinite(self.distance_scale) or self.distance_scale <= 0:
+            raise ValueError("ToM0 distance_scale must be positive and finite")
+        if not np.isfinite(self.occupancy_half_density) or self.occupancy_half_density <= 0:
+            raise ValueError("ToM0 occupancy_half_density must be positive and finite")
 
 
 def minmax_masked(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -32,8 +46,18 @@ def minmax_masked(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return np.where(mask, scaled, 0.0)
 
 
-def uncertainty(sigma: np.ndarray, sigma_ref: float) -> np.ndarray:
-    return 1.0 - np.exp(-sigma / max(sigma_ref, EPSILON))
+def uncertainty(age: np.ndarray, uncertainty_time: float) -> np.ndarray:
+    age = np.maximum(age, 0.0)
+    return age / (age + uncertainty_time)
+
+
+def distance_penalty(distance: np.ndarray, distance_scale: float) -> np.ndarray:
+    return np.sqrt(1.0 + np.maximum(distance, 0.0) / distance_scale) - 1.0
+
+
+def occupancy_penalty(density: np.ndarray, half_density: float) -> np.ndarray:
+    density = np.maximum(density, 0.0)
+    return density / (density + half_density)
 
 
 def cone_density(
@@ -73,18 +97,17 @@ def cone_density(
 def utilities(
         distance: np.ndarray,
         occupancy: np.ndarray,
-        sigma: np.ndarray,
+        age: np.ndarray,
         has_belief: np.ndarray,
         params: ToM0Params,
 ) -> np.ndarray:
-    u = uncertainty(sigma, params.sigma_ref)
-    d_hat = minmax_masked(distance, has_belief)
-    o_hat = minmax_masked(occupancy, has_belief)
-    u_hat = minmax_masked(u, has_belief)
+    u = uncertainty(age, params.uncertainty_time)
+    d_penalty = distance_penalty(distance, params.distance_scale)
+    o_penalty = occupancy_penalty(occupancy, params.occupancy_half_density)
     score = (
-        params.w_distance * d_hat
-        + params.w_occupancy * o_hat
-        + params.w_uncertainty * u_hat
+        params.w_distance * d_penalty
+        + params.w_occupancy * o_penalty
+        + params.w_uncertainty * u
     )
     return np.where(has_belief, score, -np.inf)
 
@@ -93,7 +116,7 @@ def headings_from_beliefs(
         pos: np.ndarray,
         mu: np.ndarray,
         has_belief: np.ndarray,
-        sigma: np.ndarray,
+        age: np.ndarray,
         params: ToM0Params,
         visible: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -107,7 +130,7 @@ def headings_from_beliefs(
         pos, mu, params.occupancy_range, params.occupancy_fov_rad, visible=visible,
     )
     distance = np.linalg.norm(mu - pos[:, None, :], axis=2)
-    score = utilities(distance, occupancy, sigma, has_belief, params)
+    score = utilities(distance, occupancy, age, has_belief, params)
     chosen = np.argmax(score, axis=1)
     none = ~np.any(has_belief, axis=1)
     chosen = np.where(none, -1, chosen)

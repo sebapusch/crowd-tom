@@ -7,10 +7,10 @@ import numpy as np
 from agent import Agent
 from environment import Environment
 from exit import Exit
-from experiment import load_experiment, save_experiment, ExperimentConfig, tom_order_label
+from experiment import build_environment, load_experiment, save_experiment, ExperimentConfig, tom_order_label
 from main import _metrics_path
 from tom0 import ToM0Params
-from tom1 import ToM1Params, ToM1Reasoner
+from tom1 import ToM1Params, ToM1Reasoner, demand_penalty
 
 
 def reasoner_inputs(other_beliefs=False):
@@ -39,7 +39,7 @@ class ToM1Tests(unittest.TestCase):
     def test_low_knowledge_confidence_weakens_demand_penalty(self):
         inputs = reasoner_inputs(False)
         inputs["mu"][0] = [[20.0, 0.0], [-20.0, 0.0]]
-        inputs["base_scores"][0] = [0.0, -0.2]
+        inputs["base_scores"][0] = [0.0, -0.02]
         low = ToM1Reasoner(ToM1Params(knowledge_prior=0.001))
         high = ToM1Reasoner(ToM1Params(knowledge_prior=0.5))
 
@@ -49,6 +49,14 @@ class ToM1Tests(unittest.TestCase):
         self.assertEqual(low_choice[0], 0)
         self.assertEqual(high_choice[0], 1)
         self.assertLess(low_demand[0].sum(), high_demand[0].sum())
+
+    def test_predicted_demand_uses_fixed_scale(self):
+        np.testing.assert_allclose(
+            demand_penalty(np.array([0.0, 0.01, 2.0]), 2.0),
+            [0.0, 0.01 / 2.01, 0.5],
+        )
+        with self.assertRaises(ValueError):
+            ToM1Params(demand_half_count=0.0)
 
     def test_prediction_uses_observations_not_another_agents_beliefs(self):
         params = ToM1Params(demand_weight=-2.0)
@@ -136,6 +144,7 @@ class ToM1Tests(unittest.TestCase):
         ]
         env = Environment(
             30, 30, agents, view_range=10.0,
+            tom0=ToM0Params(w_occupancy=0.0),
             tom1=ToM1Params(demand_weight=-10.0),
             tom_order=0,
         )
@@ -153,6 +162,7 @@ class ToM1Tests(unittest.TestCase):
     def test_yaml_round_trip_and_mode_label(self):
         config = ExperimentConfig(
             tom_order=1,
+            view_range=8.0,
             tom1=ToM1Params(model_range=8.0, demand_weight=-0.5),
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -164,6 +174,22 @@ class ToM1Tests(unittest.TestCase):
         self.assertEqual(tom_order_label(1), "ToM-1")
         self.assertEqual(_metrics_path(1).name, "last-metrics-tom-1.csv")
         self.assertEqual(_metrics_path(0).name, "last-metrics-tom-0.csv")
+
+    def test_yaml_view_range_controls_behavioral_radii(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scene.yaml"
+            path.write_text(
+                "perception:\n  view_range: 7.0\n"
+                "tom1:\n  model_range: 2.0\n"
+                "agents:\n  count: 2\n"
+            )
+            config = load_experiment(path)
+            self.assertEqual(config.tom1.model_range, 7.0)
+            env = build_environment(config)
+            self.assertEqual(env.tom0.occupancy_range, 7.0)
+            self.assertEqual(env.tom1.params.model_range, 7.0)
+            save_experiment(config, path)
+            self.assertNotIn("model_range", path.read_text())
 
 
 if __name__ == "__main__":

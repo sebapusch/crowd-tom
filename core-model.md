@@ -1,6 +1,6 @@
 # Crowd model: equations, implementation, and context
 
-This document consolidates the reactive, ToM0, and ToM1 model notes. The reactive and ToM0 sections were checked against commit `2ca14f1` on 2 October 2026; ToM1 was checked against the working-tree implementation. Part I states the physical and behavioral model. Part II records implementation details that affect trajectories and measurements. Part III distinguishes the original paper's additional mechanisms and future proposals from implemented behavior.
+This document consolidates the reactive, ToM0, and ToM1 model notes and describes the current implementation. Part I states the physical and behavioral model. Part II records implementation details that affect trajectories and measurements. Part III distinguishes the original paper's additional mechanisms and future proposals from implemented behavior.
 
 ## Contents
 
@@ -147,24 +147,26 @@ For each known exit, memory age and uncertainty are
 
 $$
 a_{ik}=\max(t-s_{ik},0),\qquad
-\sigma_{ik}=\sigma_0+\beta\sqrt{a_{ik}},\qquad
-u_{ik}=1-\exp\!\left(-\frac{\sigma_{ik}}{\max(\sigma_{\mathrm{ref}},\epsilon)}\right).
+u_{ik}=\frac{a_{ik}}{a_{ik}+T_u},\qquad T_u>0.
 \tag{9}
 $$
 
-The remembered position stays fixed between sightings; only its uncertainty increases. There is no forgetting or sampled positional error. Reactive agents do not use or update this memory. The older $u=\min(1,a/T_u)$ rule in a short note is not implemented.
+The remembered position stays fixed between sightings; only its age-dependent uncertainty penalty increases. $u_{ik}=0$ at a sighting and reaches $0.5$ after $T_u$ seconds. There is no forgetting or sampled positional error. Reactive agents do not use or update this memory. The older $u=\min(1,a/T_u)$ rule in a short note is not implemented.
 
 ### 5. ToM0 exit selection
 
-For $k\in\mathcal K_i$, define remembered distance and the cone direction:
+For $k\in\mathcal K_i$, define remembered distance, its score penalty, and the cone direction:
 
 $$
 \widetilde d_{ik}=\|\boldsymbol\mu_{ik}-\mathbf r_i\|,\qquad
+f_d(\widetilde d_{ik})=\sqrt{1+\frac{\widetilde d_{ik}}{D}}-1,\quad D>0,\qquad
 \mathbf c_{ik}=\mathcal N(\boldsymbol\mu_{ik}-\mathbf r_i).
 \tag{10}
 $$
 
-With occupancy radius $R_o$ and full cone angle $\psi$, congestion is
+$D$ is a fixed distance scale in metres. The penalty is zero at the target, equals $\sqrt2-1$ at distance $D$, and equals $1$ at $3D$. It keeps increasing at longer distances while each additional metre has less effect. It is not normalized across known exits.
+
+With occupancy radius $R_o=R$ (the configured view range) and full cone angle $\psi$, congestion is
 
 $$
 o_{ik}=
@@ -175,30 +177,26 @@ o_{ik}=
 \tag{11}
 $$
 
-This counts currently visible agents in a cone toward the remembered target. The cone is not clipped to the room or shortened at the exit, but agents hidden behind obstacles or outside view range/FOV are excluded. This measures the first part of the route toward the remembered point, not the crowd immediately around the exit.
+This counts currently visible agents in a cone toward the remembered target and divides by the cone area, giving observed agents per square metre. The cone is not clipped to the room or shortened at the exit, but agents hidden behind obstacles or outside view range/FOV are excluded. This measures the first part of the route toward the remembered point, not the crowd immediately around the exit.
 
-Each criterion $x\in\{\widetilde d,o,u\}$ is normalized over the same agent's known exits:
+Map the raw density to a bounded score penalty with a fixed positive reference density $\rho_{1/2}$:
 
 $$
-x_{i,\min}=\min_{k\in\mathcal K_i}x_{ik},\qquad
-x_{i,\max}=\max_{k\in\mathcal K_i}x_{ik},\qquad
-\widehat x_{ik}=
-\begin{cases}
-\dfrac{x_{ik}-x_{i,\min}}{x_{i,\max}-x_{i,\min}},&x_{i,\max}-x_{i,\min}\ge\epsilon,\\
-0,&x_{i,\max}-x_{i,\min}<\epsilon.
-\end{cases}
+f_o(o_{ik})=\frac{o_{ik}}{o_{ik}+\rho_{1/2}},\qquad \rho_{1/2}>0.
 \tag{12}
 $$
+
+$f_o=0$ for an empty cone, reaches $0.5$ at density $\rho_{1/2}$, and approaches $1$ at high density. With the default $R=40$ m and $\psi=\pi/3$, the cone area is $800\pi/3\approx838$ m$^2$; about 34 observed agents give a penalty of $0.5$ at $\rho_{1/2}=0.04$ agents/m$^2$. Changing the YAML view range changes both the agents counted and the cone area. The density penalty is not normalized across exits.
 
 The score and chosen exit are
 
 $$
-S_{ik}=w_d\widehat d_{ik}+w_o\widehat o_{ik}+w_u\widehat u_{ik},\qquad
+S_{ik}=w_d f_d(\widetilde d_{ik})+w_o f_o(o_{ik})+w_u u_{ik},\qquad
 k_i^{\mathrm{ToM0}}=\underset{k\in\mathcal K_i}{\arg\max}\ S_{ik}.
 \tag{13}
 $$
 
-The weights are negative, so shorter distance, lower congestion, and lower uncertainty are preferred. Selection is repeated at each decision. A single known exit is selected regardless of its absolute uncertainty, because all its normalized criteria are zero.
+The weights are negative, so shorter distance, lower congestion, and lower uncertainty are preferred. All three criteria use fixed scales rather than normalization across exits: small differences give small score differences. The distance penalty is unbounded, while the density and uncertainty penalties are bounded below $1$; their scale parameters and weights determine the tradeoffs. Selection is repeated at each decision. A single known exit is selected regardless of its absolute score because no other known exit competes with it; its score can still be negative.
 
 ### ToM1 exit-choice extension
 
@@ -206,7 +204,7 @@ A ToM1 agent starts from its own ToM0 exit scores. It predicts the ToM0 choices 
 
 #### Observed agents and witnessed-sighting memory
 
-Let $\mathcal K_i(t)$ be $i$'s own ToM0 set of known exits, and let $P_{ij}(t)=1$ mean that $i$ currently sees $j$ according to the current agent-perception rule. Define a separate ToM1 modeling radius $R_{\mathrm T}$ and the agents whose choices $i$ predicts now:
+Let $\mathcal K_i(t)$ be $i$'s own ToM0 set of known exits, and let $P_{ij}(t)=1$ mean that $i$ currently sees $j$ according to the current agent-perception rule. ToM1 uses the same configured view radius, $R_{\mathrm T}=R$, to select agents whose choices $i$ predicts now:
 
 $$
 \mathcal A^{(i)}_{\mathrm{obs}}(t)
@@ -214,7 +212,7 @@ $$
 \tag{T1}
 $$
 
-$R_{\mathrm T}$ need not equal the ToM0 occupancy-cone radius $R_o$. The visibility flag $P_{ij}$ already includes the simulator's view range, field of view, and obstacle line of sight. The following estimate is made only for $j\in\mathcal A^{(i)}_{\mathrm{obs}}$; a record of someone no longer visible may be retained briefly but does not add to current predicted congestion.
+The visibility flag $P_{ij}$ already includes the same view range, field of view, and obstacle line of sight. The following estimate is made only for $j\in\mathcal A^{(i)}_{\mathrm{obs}}$; a record of someone no longer visible may be retained briefly but does not add to current predicted congestion.
 
 Let $\tau_{ijk}$ be the latest time at which $i$ inferred that $j$ saw exit $k$; it is undefined if this has never happened. Agent $i$ keeps a bounded set of these **witnessed exit sightings**:
 
@@ -245,7 +243,7 @@ Not witnessing a sighting is not evidence that $j$ does not know the exit: $j$ m
 
 #### Estimated knowledge and memory uncertainty
 
-Use the ToM0 age and uncertainty rule in (9), with $a=\max(t-\tau_{ijk},0)$ and $u(a)=1-\exp[-(\sigma_0+\beta\sqrt a)/\max(\sigma_{\mathrm{ref}},\epsilon)]$. Here $a$ measures time since **$i$ last inferred a sighting by $j$**, rather than time since $j$ actually last saw the exit.
+Use the ToM0 age and uncertainty rule in (9), with $a=\max(t-\tau_{ijk},0)$ and $u(a)=a/(a+T_u)$. Here $a$ measures time since **$i$ last inferred a sighting by $j$**, rather than time since $j$ actually last saw the exit.
 
 Define a separate confidence-decay function for that witnessed record:
 
@@ -311,13 +309,13 @@ $$
 
 For $\widehat P^{(i)}_{jy}$, $i$ can apply its known geometry to $j$ and $y$, using an estimated heading when needed. This remains a **partial observation**: another agent visible to $j$ but not to $i$ is missing from $\mathcal O_i$. The vector in the cone test points from $j$ to $y$, and $y=j$ is excluded.
 
-For each observed $j$, normalize each criterion $x\in\{\widehat d^{(i)},\widehat o^{(i)},\widehat u^{(i)}\}$ across $k\in\mathcal K_i$, using the same min-max rule and $\epsilon$ constant-range guard as ToM0. Denote the normalized values by $\overline d^{(i)}_{jk}$, $\overline o^{(i)}_{jk}$, and $\overline u^{(i)}_{jk}$. The **estimated ToM0 score** is
+For each observed $j$, apply the same fixed-scale distance and density penalties as ToM0 to its estimated values. Use the bounded uncertainty estimate directly. The **estimated ToM0 score** is
 
 $$
 \widehat S^{(i,0)}_{jk}
-=w_d\overline d^{(i)}_{jk}
-+w_o\overline o^{(i)}_{jk}
-+w_u\overline u^{(i)}_{jk}.
+=w_d f_d(\widehat d^{(i)}_{jk})
++w_o f_o(\widehat o^{(i)}_{jk})
++w_u\widehat u^{(i)}_{jk}.
 \tag{T7}
 $$
 
@@ -356,27 +354,24 @@ C_{ik}=\sum_{j\in\mathcal A^{(i)}_{\mathrm{obs}}}p^{(i)}_{jk}.
 \tag{T10}
 $$
 
-Normalize $C_{ik}$ across $k\in\mathcal K_i$ with the ToM0 min-max rule to obtain $\widehat C_{ik}$. Since that normalization removes the absolute scale of predicted demand, retain an overall confidence factor
+Map predicted demand to a bounded penalty using a fixed half-penalty count $C_{1/2}>0$:
 
 $$
-\rho_i=\begin{cases}
-\dfrac{1}{|\mathcal A^{(i)}_{\mathrm{obs}}|}
-\displaystyle\sum_{j\in\mathcal A^{(i)}_{\mathrm{obs}}}q_j^{(i)},
-&\mathcal A^{(i)}_{\mathrm{obs}}\ne\varnothing,\\
-0,&\text{otherwise}.
-\end{cases}
+f_c(C_{ik})=\frac{C_{ik}}{C_{ik}+C_{1/2}},\qquad C_{1/2}>0.
 \tag{T10a}
 $$
+
+$f_c$ is zero when no observed agent is predicted to choose the exit and reaches $0.5$ at $C_{1/2}$ predicted agents. Small differences in demand give small differences in the penalty. The knowledge confidences $v^{(i)}_{jk}$ and $q_j^{(i)}$ already reduce the predicted probabilities in (T9), so no additional confidence multiplier is applied.
 
 Let $S^{(0)}_{ik}$ be $i$'s own ToM0 score, computed with **its own** memory and current occupancy. Then
 
 $$
-S^{(1)}_{ik}=S^{(0)}_{ik}+w_c\rho_i\widehat C_{ik},\qquad
+S^{(1)}_{ik}=S^{(0)}_{ik}+w_c f_c(C_{ik}),\qquad
 k_i^{(1)}=\arg\max_{k\in\mathcal K_i}S^{(1)}_{ik},\qquad w_c\le0.
 \tag{T11}
 $$
 
-ToM1 changes only $i$'s exit choice. If $\mathcal K_i$ is empty, use the existing follow/wander fallback; if no other agent is observed, all $C_{ik}=0$ and the ToM1 term vanishes. Small knowledge confidence also weakens the extra term through $\rho_i$. The existing force law and movement update remain unchanged. The cone density in ToM0 measures current visible crowding along a route, while $C_{ik}$ estimates future exit choices; they may be correlated, so $w_c$ needs calibration rather than automatically taking the same value as $w_o$.
+ToM1 changes only $i$'s exit choice. If $\mathcal K_i$ is empty, use the existing follow/wander fallback; if no other agent is observed, all $C_{ik}=0$ and the ToM1 term vanishes. Small knowledge confidence weakens the extra term by reducing $C_{ik}$. The existing force law and movement update remain unchanged. The cone density in ToM0 measures current visible crowding along a route, while $C_{ik}$ estimates future exit choices; they may be correlated, so $w_c$ needs calibration rather than automatically taking the same value as $w_o$.
 
 ### 6. Shared movement policy
 
@@ -498,8 +493,8 @@ Other guards are local numerical conventions:
 
 - Exit and agent visibility require target distance in $(\epsilon,R]$; occupancy counts require $d_{ij}>\epsilon$ and agent visibility.
 - The cone axis uses division by $\max(\|\boldsymbol\mu_{ik}-\mathbf r_i\|,\epsilon)$; unlike (I3), it does not explicitly set a small nonzero vector to zero.
-- Memory age is computed as $\max(t-s_{ik},0)$. The uncertainty denominator uses $\max(\sigma_{\mathrm{ref}},\epsilon)$, and cone area uses $\max(\tfrac12R_o^2\psi,\epsilon)$.
-- Min-max normalization treats any criterion range smaller than $\epsilon$ as constant and returns zero.
+- Memory age is computed as $\max(t-s_{ik},0)$. $T_u$, $D$, and $\rho_{1/2}$ must be positive and finite; cone area uses $\max(\tfrac12R_o^2\psi,\epsilon)$.
+- Predicted demand uses the positive $C_{1/2}$ scale without min-max normalization.
 - Panoramic vision bypasses the angular test when $\phi\ge2\pi-10^{-9}$, for both exits and other agents.
 
 At initialization and repacking after departures, headings are normalized and near-zero headings become $(1,0)$. During ordinary direction selection, a zero target displacement returns zero desired direction. There is no additional recovery rule for reaching a remembered target exactly.
@@ -570,16 +565,17 @@ These values instantiate the equations; they are not universal model constants.
 | Force parameters | $A_i=2000$, $B_i=0.08$, $k=1.2\times10^5$, $\kappa=2.4\times10^5$ |
 | Exit perception | $R=40$, $\phi=2\pi$ |
 | Agent perception | The same $R$ and $\phi$ as exit perception, plus obstacle line of sight |
-| Memory uncertainty | $\sigma_0=0.1$, $\beta=0.5$, $\sigma_{\mathrm{ref}}=8$ |
+| Memory uncertainty | $T_u=30$ s |
+| Distance scale | $D=10$ m |
 | Exit score | $w_d=w_o=w_u=-1$ |
-| Occupancy cone | $R_o=12$, $\psi=\pi/3$ |
+| Occupancy cone | $R_o=R=40$, $\psi=\pi/3$, $\rho_{1/2}=0.04$ agents/m$^2$ |
 | ToM1 predicted demand | See [[#ToM1 implementation choices|ToM1 implementation choices]] |
 | Numerical settings | $\Delta t=1/60$, $\epsilon=10^{-12}$, $\gamma=1$, $c=1.5$, $\omega=1.5$ |
 | Startup scene | $400$ ToM0 agents in a $100\times100$ room |
 
 Under the paper's unit convention, lengths are meters, time is seconds, mass is kilograms, and forces are newtons. The current mass and relaxation time differ from the original paper's calibration.
 
-The startup file is `two-north-one-south.yaml`, with exits $[(20,0),(23,0)]$, $[(77,0),(80,0)]$, and $[(50,100),(53,100)]$. Perimeter walls are generated around exit gaps; YAML can also specify interior walls and circles. YAML exposes scene geometry, agent count/radius/desired speed, homogeneous or mixed ToM mode, and exit-perception settings. The `tom1` block overrides ToM1 parameters; the remaining parameters use code defaults, with programmatic overrides available for environment settings and ToM0 parameters.
+The startup file is `two-north-one-south.yaml`, with exits $[(20,0),(23,0)]$, $[(77,0),(80,0)]$, and $[(50,100),(53,100)]$. Perimeter walls are generated around exit gaps; YAML can also specify interior walls and circles. YAML exposes scene geometry, agent count/radius/desired speed, homogeneous or mixed ToM mode, and perception settings. `perception.view_range` sets exit and agent visibility, the ToM0 cone radius $R_o$, and the ToM1 modeling radius $R_{\mathrm T}$. A legacy `tom1.model_range` entry is ignored when loading and omitted when saving. Other fields in the `tom1` block override ToM1 parameters; the remaining parameters use code defaults, with programmatic overrides available for environment settings and ToM0 parameters.
 
 Initial velocities are zero. Initial headings have uniformly sampled angles in $[0,2\pi)$. Positions are sampled by sequential rejection in the room with margin $r_i+0.05+1$, pair separation at least $2r_i+0.05$, and obstacle clearance at least $r_i+0.05$. All exit memories start empty.
 
@@ -587,16 +583,17 @@ Initial velocities are zero. Initial headings have uniformly sampled angles in $
 
 | Parameter | Code field | Default |
 |---|---|---:|
-| Modeling radius $R_{\mathrm T}$ | `model_range` | $12$ |
+| Modeling radius $R_{\mathrm T}$ | Derived from `perception.view_range` | $40$ |
 | Tracked agents $M$ | `memory_agents` | $16$ |
 | Record lifetime $T_{\mathrm{mem}}$ | `memory_horizon` | $30$ s |
 | Confidence decay $T_v$ | `confidence_decay` | $10$ s |
 | Knowledge prior $v_{\mathrm{prior}}$ | `knowledge_prior` | $0.2$ |
 | Unknown-history penalty $u_{\mathrm{prior}}$ | `uncertainty_prior` | $0.5$ |
 | Choice temperature $\theta$ | `choice_temperature` | $1$ |
-| Predicted-demand weight $w_c$ | `demand_weight` | $-1$ |
+| Predicted-demand half count $C_{1/2}$ | `demand_half_count` | $2$ agents |
+| Predicted-demand weight $w_c$ | `demand_weight` | $-0.5$ |
 
-These are heuristic starting values, not calibrated behavioral measurements. They can be overridden in a YAML `tom1` block or through `ToM1Params`. The current implementation uses observed velocity as a proxy for another agent's hidden heading when estimating their visibility under restricted FOV. With panoramic FOV, the heading estimate is irrelevant. For predicted occupancy, the implementation evaluates visibility among $i$ and the agents currently observed by $i$; it cannot include agents outside that set. Witness records persist when ToM1 is temporarily disabled and expire by age when it resumes; resetting the experiment creates a fresh memory state.
+These are heuristic starting values, not calibrated behavioral measurements. With $T_u=T_{\mathrm{mem}}=30$ s, the age penalty at record expiry equals $u_{\mathrm{prior}}=0.5$; the knowledge-confidence estimate may still jump when a record expires. ToM1 values other than modeling radius can be overridden in a YAML `tom1` block or through `ToM1Params`; the environment always sets modeling radius from view range. The current implementation uses observed velocity as a proxy for another agent's hidden heading when estimating their visibility under restricted FOV. With panoramic FOV, the heading estimate is irrelevant. For predicted occupancy, the implementation evaluates visibility among $i$ and the agents currently observed by $i$; it cannot include agents outside that set. Witness records persist when ToM1 is temporarily disabled and expire by age when it resumes; resetting the experiment creates a fresh memory state.
 
 ### 7. Diagnostics and source mapping
 
@@ -604,7 +601,7 @@ Diagnostics do not feed back into the core equations. The simulator records esca
 
 For surviving agents after a step, `seeing` counts those who saw at least one exit at the decision snapshot; `with_belief` counts those holding any remembered exit; `no_belief` is the remaining survivors. `memory_guided` counts selected exits not visible at that snapshot, including when a different exit was visible. `blind_committed` counts belief holders who saw no exit. The latter two are distinct conditions. Escape counts are accumulated per exit; evacuation time is the first completed step with no agents remaining.
 
-Metrics are collected after movement and departure removal, but use visibility and choices from the preceding decision. Mean ages and $\sigma$ use the updated clock; maximum commitment distance uses the updated positions. A just-seen exit can already show age $\Delta t$. Peaks are recorded for memory-guided count and commitment distance, while blind commitment is summed as agent-seconds. The CSV contains `t,remaining,remaining_tom0,remaining_tom1,remaining_reactive,escaped,seeing,with_belief,memory_guided,no_belief`; the remaining diagnostics are available separately. In mixed scenes, the type counts follow agents' assigned types even if the T key temporarily overrides their behavior. Mode toggles can leave beliefs from earlier ToM0 steps. In reactive mode, selected-exit age and distance statistics can use zero placeholder memory entries and do not then describe real memories.
+Metrics are collected after movement and departure removal, but use visibility and choices from the preceding decision. Mean age and mean uncertainty penalty use the updated clock; maximum commitment distance uses the updated positions. A just-seen exit can already show age $\Delta t$. Peaks are recorded for memory-guided count and commitment distance, while blind commitment is summed as agent-seconds. The CSV contains `t,remaining,remaining_tom0,remaining_tom1,remaining_reactive,escaped,seeing,with_belief,memory_guided,no_belief`; the remaining diagnostics are available separately. In mixed scenes, the type counts follow agents' assigned types even if the T key temporarily overrides their behavior. Mode toggles can leave beliefs from earlier ToM0 steps. In reactive mode, selected-exit age and distance statistics can use zero placeholder memory entries and do not then describe real memories.
 
 | Responsibility | Source |
 |---|---|
@@ -664,7 +661,7 @@ $$
 
 When all $A_i>\gamma$ and $B_i>0$, $2r_{\max}+B_{\max}\ln(A_{\max}/\gamma)$ is a convenient upper bound. The radius term is the **sum** of two radii, so the old note's single maximum radius is insufficient. The running vectorized force calculation computes pairwise distances directly and applies (I4); the grid helper does not select force pairs. Thus cell width does not currently affect interactions.
 
-Several presentation or refactoring ideas from the earlier notes remain useful. Equation (I5) defines the same closest-point operation for walls and exits; substituting an exit midpoint would change model behavior. The cone area in (11) is common to all candidate exits, so raw cone counts produce the same min-max-normalized congestion score when the criterion is nonconstant; an exact code refactor must retain the scaled $\epsilon$ threshold. The uncertainty penalty in (9) has a common offset and positive scale across an agent's exits, so its normalized ranking can be written using $1-\exp[-(\beta/\sigma_{\mathrm{ref}})\sqrt a]$, again retaining the original near-equality guard for exact behavior. With the default panoramic FOV, the angular condition drops out, while range and obstacle occlusion still apply to both exits and agents.
+Several presentation or refactoring ideas from the earlier notes remain useful. Equation (I5) defines the same closest-point operation for walls and exits; substituting an exit midpoint would change model behavior. The cone area in (11) converts the count to agents per square metre, so changing the cone geometry changes the measured density. All three exit-choice criteria now use fixed scales; normalizing them across exits would change behavior. With the default panoramic FOV, the angular condition drops out, while range and obstacle occlusion still apply to both exits and agents.
 
 ### ToM1 research basis and modeling choices
 

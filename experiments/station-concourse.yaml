@@ -4,7 +4,7 @@
 name: station-concourse
 width: 70
 height: 60
-tom_proportions: {tom0: 0.9, tom1: 0.1}
+tom_proportions: {tom0: 0.5, tom1: 0.5}
 agents:
   count: 150
   radius: 0.3
@@ -13,7 +13,7 @@ agents:
     min: [5, 20]
     max: [23, 40]
 perception:
-  view_range: 27
+  view_range: 20
   fov_deg: 360
 exits:
   - {side: east, center: 4, width: 3.5, name: north_platform}

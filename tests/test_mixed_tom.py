@@ -12,6 +12,7 @@ from experiment import (
     save_experiment,
 )
 from plots import History
+from tom0 import ToM0Params
 from tom1 import ToM1Params
 
 
@@ -59,6 +60,7 @@ class MixedToMTests(unittest.TestCase):
             ]
             env = Environment(
                 30, 30, agents, view_range=10.0,
+                tom0=ToM0Params(w_occupancy=0.0),
                 tom1=ToM1Params(demand_weight=-10.0), tom_order=order,
             )
             env.add_exit(Exit((5.0, -1.0), (5.0, 1.0)))
