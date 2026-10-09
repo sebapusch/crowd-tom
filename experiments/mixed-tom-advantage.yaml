@@ -1,0 +1,29 @@
+# Mixed-population test of whether predicting demand helps an individual leave.
+# Agents begin nearer the narrow left exit. ToM-0 tends to queue there; ToM-1
+# can predict that demand and take the longer route to the wider right exit.
+# Compare mean departure times by type across seeds with scripts/evaluate_mixed_tom.py.
+name: mixed-tom-advantage
+width: 100
+height: 60
+tom_proportions: {tom0: 0.5, tom1: 0.5}
+agents:
+  count: 40
+  radius: 0.3
+  desired_speed: 2.0
+  spawn_region:
+    min: [42, 22]
+    max: [47, 34]
+perception:
+  view_range: 45
+  fov_deg: 360
+tom1:
+  memory_agents: 40
+  choice_temperature: 0.2
+  demand_half_count: 4.0
+  demand_weight: -1.0
+exits:
+  - {side: north, center: 30, width: 2, name: near-narrow}
+  - {side: north, center: 70, width: 4, name: far-wide}
+obstacles:
+  walls: []
+  circles: []

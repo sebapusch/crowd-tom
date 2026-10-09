@@ -32,7 +32,7 @@ A pygame window opens: the room on the left, live plots on the right. Close the 
 | `two-north-one-south.yaml` | Default: two north doors, one south (no interior obstacles) |
 | `north-south.yaml`         | One north, one south                                        |
 | `four-doors.yaml`          | North, south, east, west                                    |
-| `mixed-tom.yaml`           | Four doors with equal ToM-0 and ToM-1 proportions          |
+| `mixed-tom-advantage.yaml` | Equal ToM-0/ToM-1 mix: a nearer narrow exit and a farther wide exit |
 | `pillar.yaml`              | Two north + one south, plus a bar and a circular pillar     |
 | `station-concourse.yaml`   | Clustered arrivals, ticket-gate obstacles, three signed platform entrances |
 | `tom1-demand-contrast.yaml` | Diagnostic: ToM-0 favors the left exit; ToM-1 splits demand between two visible exits |
@@ -42,7 +42,13 @@ A pygame window opens: the room on the left, live plots on the right. Close the 
 
 To see the ToM difference directly, run `uv run python main.py experiments/tom1-demand-contrast.yaml` and press **D** for colored exit-choice arrows. The scene starts in ToM-1 mode; press **T** twice to reach ToM-0 on the same crowd. Its ToM-1 parameters deliberately make the predicted-demand effect easy to see.
 
-For a mixed population, add `tom_proportions: {tom0: 0.6, tom1: 0.4}` at the top level. Both values must be between 0 and 1 and sum to 1. The simulator rounds the ToM-1 count to the nearest agent, assigns types randomly at spawn, and keeps each agent's type for the run. This setting takes precedence over `tom_order`. See `experiments/mixed-tom.yaml`.
+For a mixed population, add `tom_proportions: {tom0: 0.6, tom1: 0.4}` at the top level. Both values must be between 0 and 1 and sum to 1. The simulator rounds the ToM-1 count to the nearest agent, assigns types randomly at spawn, and keeps each agent's type for the run. This setting takes precedence over `tom_order`. See `experiments/mixed-tom-advantage.yaml`.
+
+The mixed advantage scene puts 20 agents of each type in the same spawn area. The left exit is nearer but narrow; the right exit is farther but wider. Its ToM-1 demand settings are deliberately strong for a diagnostic demonstration. ToM-1's predicted demand can divert agents from the near queue. Run `uv run python main.py experiments/mixed-tom-advantage.yaml` and press **D** to see choices. The graph shows remaining agents by type.
+
+For departure times, run `uv run python scripts/evaluate_mixed_tom.py --seeds 16`. It repeats seeded mixed runs, then repeats each spawn with every agent behaving as ToM-0 while retaining the original type labels. The labeled all-ToM-0 run estimates how much of the group difference comes from random starting positions. A positive `advantage` means ToM-1 agents left sooner on average. The evaluator counts anyone still inside at its 120-second cutoff as 120 seconds.
+
+At the UI's 1/60-second step, ToM-1 left sooner in 15 of seeds 0–15, averaging about 3.3 seconds earlier. The paired improvement over the labeled all-ToM-0 control was about 1.5 seconds. Results vary by seed, so compare the across-seed summary rather than a single run.
 
 ## Controls
 
