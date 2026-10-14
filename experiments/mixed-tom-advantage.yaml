@@ -11,8 +11,8 @@ agents:
   radius: 0.3
   desired_speed: 2.0
   spawn_region:
-    min: [42, 22]
-    max: [47, 34]
+    min: [33, 22]
+    max: [39, 34]
 perception:
   view_range: 45
   fov_deg: 360
@@ -23,7 +23,7 @@ tom1:
   demand_weight: -1.0
 exits:
   - {side: north, center: 30, width: 2, name: near-narrow}
-  - {side: north, center: 70, width: 4, name: far-wide}
+  - {side: north, center: 70, width: 2, name: far-wide}
 obstacles:
   walls: []
   circles: []
