@@ -1,0 +1,19 @@
+name: four-doors-small
+width: 50
+height: 50
+tom_order: 0
+agents:
+  count: 200
+  radius: 0.15
+  desired_speed: 2.0
+perception:
+  view_range: 20
+  fov_deg: 360
+exits:
+  - {side: north, center: 26, width: 2, name: north}
+  - {side: south, center: 26, width: 2, name: south}
+  - {side: west, center: 26, width: 2, name: west}
+  - {side: east, center: 26, width: 2, name: east}
+obstacles:
+  walls: []
+  circles: []

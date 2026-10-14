@@ -22,12 +22,38 @@ class Distance:
     closest_point: np.ndarray
 
 
+@dataclass
+class Distances:
+    distance: np.ndarray
+    normal: np.ndarray
+    closest_point: np.ndarray
+
+
+def _as_positions(positions: np.ndarray) -> np.ndarray:
+    array = np.asarray(positions, dtype=float)
+    if array.ndim == 1:
+        return array.reshape(1, 2)
+    return array
+
 
 class Obstacle(ABC):
     @abstractmethod
     def distance_to(self, agent: Agent) -> Distance:
         """Return the surface distance, outward normal, and closest point."""
         ...
+
+    @abstractmethod
+    def distances(self, positions: np.ndarray) -> Distances:
+        """Vectorized distance query for an (N, 2) array of positions."""
+        ...
+
+
+def _distance_from_batch(batch: Distances) -> Distance:
+    return Distance(
+        distance=float(batch.distance[0]),
+        normal=batch.normal[0],
+        closest_point=batch.closest_point[0],
+    )
 
 
 class Wall(Obstacle):
@@ -36,56 +62,45 @@ class Wall(Obstacle):
         self.end = np.asarray(end, dtype=float)
 
     def distance_to(self, agent: Agent) -> Distance:
+        return _distance_from_batch(self.distances(agent.position))
+
+    def distances(self, positions: np.ndarray) -> Distances:
+        positions = _as_positions(positions)
         segment = self.end - self.start
-        length_squared = np.dot(segment, segment)
+        length_squared = float(np.dot(segment, segment))
 
         if length_squared < EPSILON:
-            difference = agent.position - self.start
-            distance = np.linalg.norm(difference)
+            difference = positions - self.start
+            distance = np.linalg.norm(difference, axis=1)
+            normal = np.zeros_like(positions)
+            degenerate = distance < EPSILON
+            ok = ~degenerate
+            if np.any(ok):
+                normal[ok] = difference[ok] / distance[ok, None]
+            normal[degenerate] = np.array([1.0, 0.0])
+            closest_point = np.repeat(self.start.reshape(1, 2), len(positions), axis=0)
+            distance = np.where(degenerate, 0.0, distance)
+            return Distances(distance=distance, normal=normal, closest_point=closest_point)
 
-            if distance < EPSILON:
-                return Distance(
-                    distance=0.0,
-                    normal=np.array([1.0, 0.0]),
-                    closest_point=self.start.copy(),
-                )
-
-            return Distance(
-                distance=distance,
-                normal=difference / distance,
-                closest_point=self.start.copy(),
-            )
-
-        # Project the agent onto the infinite line.
-        projection = (
-            np.dot(agent.position - self.start, segment)
-            / length_squared
-        )
-
-        # Restrict the projection to the finite segment.
+        projection = np.dot(positions - self.start, segment) / length_squared
         projection = np.clip(projection, 0.0, 1.0)
+        closest_point = self.start + projection[:, None] * segment
+        difference = positions - closest_point
+        distance = np.linalg.norm(difference, axis=1)
 
-        closest_point = self.start + projection * segment
-        difference = agent.position - closest_point
-        distance = np.linalg.norm(difference)
+        normal = np.empty_like(positions)
+        on_surface = distance < EPSILON
+        ok = ~on_surface
+        if np.any(ok):
+            normal[ok] = difference[ok] / distance[ok, None]
+        if np.any(on_surface):
+            fallback = np.array([-segment[1], segment[0]])
+            fallback /= np.linalg.norm(fallback)
+            normal[on_surface] = fallback
+            closest_point[on_surface] = positions[on_surface]
+            distance[on_surface] = 0.0
 
-        if distance < EPSILON:
-            normal = np.array([-segment[1], segment[0]])
-            normal /= np.linalg.norm(normal)
-
-            return Distance(
-                distance=0.0,
-                normal=normal,
-                closest_point=agent.position,
-            )
-
-        normal = difference / distance
-
-        return Distance(
-            distance=distance,
-            normal=normal,
-            closest_point=closest_point,
-        )
+        return Distances(distance=distance, normal=normal, closest_point=closest_point)
 
 
 class Circle(Obstacle):
@@ -101,19 +116,21 @@ class Circle(Obstacle):
         self.radius = radius
 
     def distance_to(self, agent: Agent) -> Distance:
-        difference = agent.position - self.center
-        center_distance = np.linalg.norm(difference)
+        return _distance_from_batch(self.distances(agent.position))
 
-        if center_distance < EPSILON:
-            normal = np.array([1.0, 0.0])
-        else:
-            normal = difference / center_distance
+    def distances(self, positions: np.ndarray) -> Distances:
+        positions = _as_positions(positions)
+        difference = positions - self.center
+        center_distance = np.linalg.norm(difference, axis=1)
+
+        normal = np.empty_like(positions)
+        at_center = center_distance < EPSILON
+        ok = ~at_center
+        if np.any(ok):
+            normal[ok] = difference[ok] / center_distance[ok, None]
+        normal[at_center] = np.array([1.0, 0.0])
 
         distance = center_distance - self.radius
         closest_point = self.center + normal * self.radius
 
-        return Distance(
-            distance=distance,
-            normal=normal,
-            closest_point=closest_point,
-        )
+        return Distances(distance=distance, normal=normal, closest_point=closest_point)
