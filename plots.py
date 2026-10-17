@@ -75,6 +75,23 @@ class History:
             lines.append(','.join(f'{value:.4f}' for value in row))
         return '\n'.join(lines) + '\n'
 
+    def auc(self) -> dict[str, float]:
+        """AUC of the remaining agents over time, for each type."""
+        if len(self.t) < 2:
+            return {'ToM-0': 0.0, 'ToM-1': 0.0}
+
+        def trapezoidal_auc(values: list[float]) -> float:
+            area = 0.0
+            for i in range(1, len(values)):
+                dt = self.t[i] - self.t[i - 1]
+                area += 0.5 * (values[i] + values[i - 1]) * dt
+            return area
+
+        return {
+            'ToM-0': trapezoidal_auc(self.remaining_tom0),
+            'ToM-1': trapezoidal_auc(self.remaining_tom1),
+        }
+
 
 def _polyline(screen: SurfaceType, xs: list[float], ys: list[float], color: tuple[int, int, int], width: int = 2) -> None:
     if len(xs) < 2:
@@ -166,3 +183,33 @@ def draw_plots(
     for line in help_lines:
         screen.blit(font.render(line, False, (60, 60, 60)), (SIM_SIZE + 16, y))
         y += 22
+
+
+def save_auc_plot(history: History, path: str) -> None:
+    """Save the ToM-0 and ToM-1 AUC plot to a file."""
+    width, height = 900, 560
+    surface = pygame.Surface((width, height))
+    surface.fill((255, 255, 255))
+    font = pygame.font.SysFont(None, 24)
+    auc_values = history.auc()
+
+    chart_rect = pygame.Rect(30, 30, width - 60, height - 100)
+    tmax = history.t[-1] if history.t else 1.0
+    ymax = max(max(history.remaining_tom0, default=0), max(history.remaining_tom1, default=0), 1)
+
+    _chart(surface,
+           chart_rect,
+           {
+                'ToM-0': history.remaining_tom0,
+                'ToM-1': history.remaining_tom1,
+           },
+           tmax, ymax, font,
+           'Agents remaining over time',
+           )
+
+    summary = (f"ToM-0 AUC: {auc_values['ToM-0']:.2f} | "
+               f"ToM-1 AUC: {auc_values['ToM-1']:.2f}"
+    )
+
+    surface.blit(font.render(summary, False, (20, 20, 20)), (35, height - 50))
+    pygame.image.save(surface, path)

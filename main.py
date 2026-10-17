@@ -1,5 +1,7 @@
 import argparse
 import os
+import statistics
+import numpy as np
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "1")
@@ -20,7 +22,7 @@ from experiment import (
 )
 from layout import SideExit, nearest_boundary
 from obstacle import Circle, Wall
-from plots import History, SIM_SIZE, WINDOW_SIZE, draw_plots
+from plots import History, SIM_SIZE, WINDOW_SIZE, draw_plots, save_auc_plot
 
 WALL_WIDTH = 20
 EXIT_WIDTH = int(WALL_WIDTH * 1.5)
@@ -267,6 +269,10 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
     time_scale = 1.0
     running = True
     dt = 1.0 / 60
+    congestion_radius = 5.0
+    congestion_totals = [0] * len(environment.exits)
+    congestion_peaks = [0] * len(environment.exits)
+    congestion_samples = 0
     accumulator = 0.0
     paused = False
     debug = False
@@ -279,7 +285,11 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
 
     def reset() -> None:
         nonlocal environment, reported_done, accumulator, sprites
+        nonlocal congestion_totals, congestion_peaks, congestion_samples
         environment = build_environment(config)
+        congestion_totals = [0] * len(environment.exits)
+        congestion_peaks = [0] * len(environment.exits)
+        congestion_samples = 0
         sprites = _agent_sprites(max(1, int(config.agent_radius * scale)))
         history.clear()
         history.record(environment.tom0_metrics())
@@ -386,6 +396,16 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
             steps = 0
             while accumulator >= dt and steps < MAX_PHYSICS_STEPS:
                 environment.tick(dt)
+                positions = np.array([agent.position for agent in environment.agents])
+                for i, exit_ in enumerate(environment.exits):
+                    if len(positions) == 0:
+                        count = 0
+                    else:
+                        distances = exit_.distances(positions).distance
+                        count = int(np.count_nonzero(distances <= congestion_radius))
+                    congestion_totals[i] += count
+                    congestion_peaks[i] = max(congestion_peaks[i], count)
+                congestion_samples += 1
                 history.record(environment.tom0_metrics())
                 accumulator -= dt
                 steps += 1
@@ -395,10 +415,31 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
         if environment.evacuation_time is not None and not reported_done:
             stats = environment.tom0_metrics()
             print(
-                f"evacuated in {stats['evacuation_time']:.2f}s | "
-                f"escaped {stats['escaped_by_exit']} | "
+                f"Total evacuation time is {stats['evacuation_time']:.2f}s | "
+                f"Exit distribution {stats['escaped_by_exit']}, std {statistics.pstdev(stats['escaped_by_exit'])} | "
                 f"peak memory-guided {stats['peak_memory_guided']}"
             )
+            times = list(environment.evacuation_times.values())
+            if times:
+                print(
+                    f"Individual evacuation times: "
+                    f"mean={statistics.mean(times):.2f}s, "
+                    f"median={statistics.median(times):.2f}s, "
+                    f"p90={np.percentile(times, 90):.2f}s"
+                )
+            if congestion_samples:
+                print("Exit congestion: ")
+                for i, (total, peak) in enumerate(zip(congestion_totals, congestion_peaks)):
+                    mean = total / congestion_samples
+                    print(f"Exit {i + 1}: avg {mean:.2f}, peak {peak}")
+            auc_values = history.auc()
+            print(f"AUC ToM-0: {auc_values['ToM-0']:.2f}, ToM-1: {auc_values['ToM-1']:.2f}")
+            plots_dir = Path(__file__).resolve().parent / 'plots'
+            plots_dir.mkdir(exist_ok=True)
+            experiment_name = config.name.strip().lower().replace('-', '_')
+            plot_path = plots_dir / f'{experiment_name}_auc_plot.png'
+            save_auc_plot(history, str(plot_path))
+            print(f"Saved AUC plot to {plot_path}")
             csv_path = _metrics_path(None if config.tom_proportions else config.tom_order)
             csv_path.write_text(history.to_csv())
             reported_done = True

@@ -75,6 +75,7 @@ class Environment:
         self.initial_agent_count = len(agents)
         self.escaped_by_exit: list[int] = []
         self.evacuation_time: float | None = None
+        self.evacuation_times: dict[int, float] = {}
         self.peak_memory_guided = 0
         self.blind_committed_s = 0.0
         self.peak_commit_distance = 0.0
@@ -122,6 +123,11 @@ class Environment:
         claimed = np.zeros(n, dtype=bool)
         for j, exit_position in enumerate(self.exits):
             hit = exit_position.is_crossed_many(previous_position, pos) & ~claimed
+            crossing_time = self._t + dt
+            for idx in np.flatnonzero(hit):
+                agent = self.agents[idx]
+                if agent.idx not in self.evacuation_times:
+                    self.evacuation_times[agent.idx] = crossing_time
             if j < len(self.escaped_by_exit):
                 self.escaped_by_exit[j] += int(hit.sum())
             claimed |= hit
