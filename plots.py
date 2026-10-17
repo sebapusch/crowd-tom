@@ -112,8 +112,20 @@ def _chart(
     pygame.draw.rect(screen, (255, 255, 255), rect)
     pygame.draw.rect(screen, (180, 180, 180), rect, 1)
     screen.blit(font.render(title, False, (20, 20, 20)), (rect.x + 8, rect.y + 4))
-    plot = pygame.Rect(rect.x + 36, rect.y + 49, rect.width - 44, rect.height - 61)
+    plot = pygame.Rect(rect.x + 48, rect.y + 49, rect.width - 58, rect.height - 92)
+    for tick in range(5):
+        fraction = tick / 4
+        x = round(plot.x + fraction * plot.width)
+        y = round(plot.bottom - fraction * plot.height)
+        pygame.draw.line(screen, (225, 225, 225), (x, plot.y), (x, plot.bottom), 1)
+        pygame.draw.line(screen, (225, 225, 225), (plot.x, y), (plot.right, y), 1)
+        x_label = font.render(f'{fraction * tmax:.1f}', False, (70, 70, 70))
+        screen.blit(x_label, (x - x_label.get_width() // 2, plot.bottom + 2))
+        y_label = font.render(f'{fraction * ymax:.1f}', False, (70, 70, 70))
+        screen.blit(y_label, (plot.x - y_label.get_width() - 5, y - y_label.get_height() // 2))
     pygame.draw.rect(screen, PLOT_COLORS['grid'], plot, 1)
+    x_title = font.render('time (s)', False, (70, 70, 70))
+    screen.blit(x_title, (plot.centerx - x_title.get_width() // 2, plot.bottom + 21))
     if tmax > 0 and ymax > 0:
         for name, values in series.items():
             if len(values) < 2:
@@ -193,7 +205,7 @@ def save_auc_plot(history: History, path: str) -> None:
     font = pygame.font.SysFont(None, 24)
     auc_values = history.auc()
 
-    chart_rect = pygame.Rect(30, 30, width - 60, height - 100)
+    chart_rect = pygame.Rect(30, 30, width - 40, height - 100)
     tmax = history.t[-1] if history.t else 1.0
     ymax = max(max(history.remaining_tom0, default=0), max(history.remaining_tom1, default=0), 1)
 
