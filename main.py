@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import statistics
+from time import monotonic
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "1")
@@ -466,7 +467,13 @@ def run_seed_range(
 ) -> list[dict]:
     """Run an inclusive seed range headlessly, one completed run at a time."""
     summaries = []
-    for seed in range(start, end + 1):
+    total_seeds = end - start + 1
+    for run_number, seed in enumerate(range(start, end + 1), start=1):
+        started_at = monotonic()
+        last_report_at = started_at
+        progress_interval = max_time / 10
+        next_sim_report = progress_interval
+        print(f'run {run_number}/{total_seeds}, seed {seed}: starting', flush=True)
         environment = build_environment(
             config, seed=seed, initial_state_dir=results_dir / 'initial-states',
         )
@@ -478,14 +485,29 @@ def run_seed_range(
             if environment._t + 1e-9 >= next_record:
                 history.record(environment.tom0_metrics())
                 next_record += 0.5
+            now = monotonic()
+            if (environment.agents and environment._t < max_time
+                    and (environment._t >= next_sim_report or now - last_report_at >= 10)):
+                print(
+                    f'run {run_number}/{total_seeds}, seed {seed}: '
+                    f'{100 * environment._t / max_time:.0f}% '
+                    f'({environment._t:.1f}/{max_time:.1f}s simulated), '
+                    f'{len(environment.agents)}/{environment.initial_agent_count} remaining, '
+                    f'{now - started_at:.1f}s elapsed',
+                    flush=True,
+                )
+                next_sim_report = (int(environment._t / progress_interval) + 1) * progress_interval
+                last_report_at = now
         stats = environment.tom0_metrics()
         history.record(stats)
-        _save_metrics(history, config, seed, results_dir)
+        metrics_path = _save_metrics(history, config, seed, results_dir)
         summaries.append({'seed': seed, 'escaped': stats['escaped'],
                           'remaining': stats['n'], 'time': stats['t']})
         print(
-            f"seed {seed}: escaped {stats['escaped']}/{stats['initial']}, "
-            f"remaining {stats['n']}, simulated {stats['t']:.3f}s",
+            f"run {run_number}/{total_seeds}, seed {seed}: finished; "
+            f"escaped {stats['escaped']}/{stats['initial']}, "
+            f"remaining {stats['n']}, simulated {stats['t']:.3f}s, "
+            f"elapsed {monotonic() - started_at:.1f}s; saved {metrics_path}",
             flush=True,
         )
     return summaries

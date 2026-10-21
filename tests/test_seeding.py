@@ -118,6 +118,18 @@ class SeedingTests(unittest.TestCase):
             )
             self.assertIn('agent_type', (results / 'seed-test' / 'metrics-4.csv').read_text().splitlines()[0])
 
+    def test_headless_progress_reports_start_intermediate_and_finish(self):
+        config = ExperimentConfig(name='progress-test', width=20, height=20, agent_count=2)
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                run_seed_range(config, 3, 3, 0.1, 1.0, Path(directory))
+            log = output.getvalue()
+            self.assertIn('run 1/1, seed 3: starting', log)
+            self.assertIn('remaining,', log)
+            self.assertIn('run 1/1, seed 3: finished;', log)
+            self.assertIn('metrics-3.csv', log)
+
 
 if __name__ == '__main__':
     unittest.main()
