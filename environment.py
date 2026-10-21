@@ -421,28 +421,25 @@ class Environment:
             self._tom1_changed = use_tom1 & (tom1_chosen != tom_chosen)
         self._chosen_exit = chosen
 
-        informed = np.where(reactive, available_any, self._has_belief.any(axis=1))
-        fallback = self._follow_or_wander(pos, informed, dt, visible_agents)
+        fallback = self._follow_or_wander(pos, dt, visible_agents)
         return np.where(personal[:, None], direction, fallback)
 
     def _follow_or_wander(
             self,
             pos: np.ndarray,
-            informed: np.ndarray,
             dt: float,
             visible: np.ndarray,
     ) -> np.ndarray:
         n = len(pos)
         turn = self._rng.normal(0.0, self.wander_turn * dt, size=n)
         wander = self._rotate_headings(self._heading, turn)
-        if n < 2 or not np.any(informed):
+        if n < 2:
             return wander
 
         offset = pos[None, :, :] - pos[:, None, :]
         dist = np.linalg.norm(offset, axis=2)
         np.fill_diagonal(dist, np.inf)
         dist[~visible] = np.inf
-        dist[:, ~informed] = np.inf
         nearest = np.argmin(dist, axis=1)
         can_follow = np.isfinite(dist[np.arange(n), nearest])
         follow = unit_rows(pos[nearest] - pos)

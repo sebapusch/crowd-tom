@@ -126,7 +126,7 @@ $$
 
 $\operatorname{LOS}$ means that obstacles do not block the sight segment. Other agents do not block sight. Visibility refers to the closest point on the exit. $\operatorname{FOV}$ compares normalized heading and target direction against $\cos(\phi/2)$; for panoramic $\phi=2\pi$ the angular test is bypassed.
 
-The same range, field of view, previous heading, and obstacle line-of-sight rules determine whether agent $i$ sees agent $j$. Let $P_{ij}=1$ denote this directional pairwise visibility. It restricts both following and the agents counted as ToM0 congestion. The simulator supplies a visible agent's informed flag; it is not inferred from that agent's movement.
+The same range, field of view, previous heading, and obstacle line-of-sight rules determine whether agent $i$ sees agent $j$. Let $P_{ij}=1$ denote this directional pairwise visibility. It restricts both following and the agents counted as ToM0 congestion. Following does not use another agent's informed status.
 
 ### 4. ToM0 exit memory
 
@@ -375,17 +375,17 @@ ToM1 changes only $i$'s exit choice. If $\mathcal K_i$ is empty, use the existin
 
 ### 6. Shared movement policy
 
-Each policy supplies a personal target $\mathbf y_i$, when available, and a leader-eligibility flag $H_i$:
+Each policy supplies a personal target $\mathbf y_i$ when available:
 
-| Policy | Personal target | Eligible leader |
-|---|---|---|
-| Reactive | $\mathbf y_i=\mathbf q_{ik_i}$, where $k_i=\arg\min_{k\in\mathcal V_i}d_{ik}^{E}$, if $\mathcal V_i\ne\varnothing$ | $H_i=\mathbf1\{\mathcal V_i\ne\varnothing\}$ |
-| ToM0 or ToM1 | $\mathbf y_i=\boldsymbol\mu_{ik_i}$, using that mode's exit score, if $\mathcal K_i\ne\varnothing$ | $H_i=\mathbf1\{\mathcal K_i\ne\varnothing\}$ |
+| Policy | Personal target |
+|---|---|
+| Reactive | $\mathbf y_i=\mathbf q_{ik_i}$, where $k_i$ is the nearest exit currently visible or indicated by a visible sign, if any. |
+| ToM0 or ToM1 | $\mathbf y_i=\boldsymbol\mu_{ik_i}$, using that mode's exit score, if $\mathcal K_i\ne\varnothing$. |
 
-Define the eligible leaders and the nearest one:
+Define the visible neighbours and the nearest one:
 
 $$
-\mathcal F_i=\{j\in\mathcal A\setminus\{i\}:H_j=1\text{ and }P_{ij}=1\},\qquad
+\mathcal F_i=\{j\in\mathcal A\setminus\{i\}:P_{ij}=1\},\qquad
 j_i=\underset{j\in\mathcal F_i}{\arg\min}\|\mathbf r_j-\mathbf r_i\|
 \quad\text{when }\mathcal F_i\ne\varnothing.
 \tag{14}
@@ -416,7 +416,7 @@ $$
 \tag{15}
 $$
 
-Leader selection uses eligibility flags and positions but requires follower-to-leader visibility. Following targets the leader's position and does not transfer its exit beliefs. In ToM0 and ToM1, a remembered exit may be preferred over a currently visible one.
+Leader selection uses positions and follower-to-leader visibility only. Following targets the leader's position and does not transfer its exit beliefs. In ToM0 and ToM1, a remembered exit may be preferred over a currently visible one.
 
 ### 7. Departure
 
