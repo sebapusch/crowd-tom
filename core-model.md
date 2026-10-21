@@ -126,7 +126,7 @@ $$
 
 $\operatorname{LOS}$ means that obstacles do not block the sight segment. Other agents do not block sight. Visibility refers to the closest point on the exit. $\operatorname{FOV}$ compares normalized heading and target direction against $\cos(\phi/2)$; for panoramic $\phi=2\pi$ the angular test is bypassed.
 
-The same range, field of view, previous heading, and obstacle line-of-sight rules determine whether agent $i$ sees agent $j$. Let $P_{ij}=1$ denote this directional pairwise visibility. It restricts both following and the agents counted as ToM0 congestion. The simulator supplies a visible agent's informed flag; it is not inferred from that agent's movement.
+The same range, field of view, previous heading, and obstacle line-of-sight rules determine whether agent $i$ sees agent $j$. Let $P_{ij}=1$ denote this directional pairwise visibility. It restricts both following and the agents counted as ToM0 congestion. Following does not use another agent's informed status.
 
 ### 4. ToM0 exit memory
 
@@ -214,7 +214,7 @@ $$
 
 The visibility flag $P_{ij}$ already includes the same view range, field of view, and obstacle line of sight. The following estimate is made only for $j\in\mathcal A^{(i)}_{\mathrm{obs}}$; a record of someone no longer visible may be retained briefly but does not add to current predicted congestion.
 
-Let $\tau_{ijk}$ be the latest time at which $i$ inferred that $j$ saw exit $k$; it is undefined if this has never happened. Agent $i$ keeps a bounded set of these **witnessed exit sightings**:
+Let $\tau_{ijk}$ be the latest time at which $i$ inferred that $j$ saw exit $k$ or a sign for it; it is undefined if this has never happened. Agent $i$ keeps a bounded set of these **witnessed exit knowledge cues**:
 
 $$
 \mathcal M_i(t)
@@ -235,11 +235,11 @@ $$
 \tag{T2a}
 $$
 
-$\mathcal W^{(i)}_j$ is a set of **witnessed exits**, not $j$'s true known-exit set; $j$ may know exits outside it.
+$\mathcal W^{(i)}_j$ is a set of exits for which $i$ witnessed a direct or sign cue, not $j$'s true known-exit set; $j$ may know exits outside it.
 
-When the $M$-agent limit is reached, $i$ discards all records of the agent whose latest witnessed sighting is oldest. Records older than $T_{\mathrm{mem}}$ also expire. These are **$i$'s observations about $j$**, not copies of $j$'s memory. A witnessed sighting is an estimate: $i$ must see $j$ and infer that the exit is visible from $j$'s position, using the exit information and obstacle geometry known to $i$. If a restricted field of view is used, $i$ must also estimate $j$'s heading; the default panoramic view does not require that heading.
+When the $M$-agent limit is reached, $i$ discards all records of the agent whose latest witnessed cue is oldest. Records older than $T_{\mathrm{mem}}$ also expire. These are **$i$'s observations about $j$**, not copies of $j$'s memory. A witnessed cue is an estimate: $i$ must see $j$ and infer that the exit or a sign for it is visible from $j$'s position, using exit and sign geometry plus obstacle geometry. If a restricted field of view is used, $i$ estimates $j$'s heading from its visible velocity; the default panoramic view does not require that heading.
 
-Not witnessing a sighting is not evidence that $j$ does not know the exit: $j$ may have seen it before meeting $i$ or while outside $i$'s view.
+Not witnessing a cue is not evidence that $j$ does not know the exit: $j$ may have seen the exit or its sign before meeting $i$ or while outside $i$'s view.
 
 #### Estimated knowledge and memory uncertainty
 
@@ -375,17 +375,17 @@ ToM1 changes only $i$'s exit choice. If $\mathcal K_i$ is empty, use the existin
 
 ### 6. Shared movement policy
 
-Each policy supplies a personal target $\mathbf y_i$, when available, and a leader-eligibility flag $H_i$:
+Each policy supplies a personal target $\mathbf y_i$ when available:
 
-| Policy | Personal target | Eligible leader |
-|---|---|---|
-| Reactive | $\mathbf y_i=\mathbf q_{ik_i}$, where $k_i=\arg\min_{k\in\mathcal V_i}d_{ik}^{E}$, if $\mathcal V_i\ne\varnothing$ | $H_i=\mathbf1\{\mathcal V_i\ne\varnothing\}$ |
-| ToM0 or ToM1 | $\mathbf y_i=\boldsymbol\mu_{ik_i}$, using that mode's exit score, if $\mathcal K_i\ne\varnothing$ | $H_i=\mathbf1\{\mathcal K_i\ne\varnothing\}$ |
+| Policy | Personal target |
+|---|---|
+| Reactive | $\mathbf y_i=\mathbf q_{ik_i}$, where $k_i$ is the nearest exit currently visible or indicated by a visible sign, if any. |
+| ToM0 or ToM1 | $\mathbf y_i=\boldsymbol\mu_{ik_i}$, using that mode's exit score, if $\mathcal K_i\ne\varnothing$. |
 
-Define the eligible leaders and the nearest one:
+Define the visible neighbours and the nearest one:
 
 $$
-\mathcal F_i=\{j\in\mathcal A\setminus\{i\}:H_j=1\text{ and }P_{ij}=1\},\qquad
+\mathcal F_i=\{j\in\mathcal A\setminus\{i\}:P_{ij}=1\},\qquad
 j_i=\underset{j\in\mathcal F_i}{\arg\min}\|\mathbf r_j-\mathbf r_i\|
 \quad\text{when }\mathcal F_i\ne\varnothing.
 \tag{14}
@@ -416,7 +416,7 @@ $$
 \tag{15}
 $$
 
-Leader selection uses eligibility flags and positions but requires follower-to-leader visibility. Following targets the leader's position and does not transfer its exit beliefs. In ToM0 and ToM1, a remembered exit may be preferred over a currently visible one.
+Leader selection uses positions and follower-to-leader visibility only. Following targets the leader's position and does not transfer its exit beliefs. In ToM0 and ToM1, a remembered exit may be preferred over a currently visible one.
 
 ### 7. Departure
 
@@ -597,11 +597,11 @@ These are heuristic starting values, not calibrated behavioral measurements. Wit
 
 ### 7. Diagnostics and source mapping
 
-Diagnostics do not feed back into the core equations. The simulator records escape counts per exit, evacuation time, agents seeing exits, agents holding beliefs, agents selecting an unseen exit, and agents holding beliefs while seeing no exit. These last two conditions are distinct. It also tracks memory ages, uncertainty, distances to remembered targets, peaks, and accumulated blind-commitment agent-seconds.
+Diagnostics do not feed back into the core equations. The simulator records escape counts per exit, evacuation time, the current cue for each selected exit, agents holding beliefs, and agents holding beliefs while seeing no exit or sign. It also tracks memory ages, uncertainty, distances to remembered targets, peaks, and accumulated blind-commitment agent-seconds.
 
-For surviving agents after a step, `seeing` counts those who saw at least one exit at the decision snapshot; `with_belief` counts those holding any remembered exit; `no_belief` is the remaining survivors. `memory_guided` counts selected exits not visible at that snapshot, including when a different exit was visible. `blind_committed` counts belief holders who saw no exit. The latter two are distinct conditions. Escape counts are accumulated per exit; evacuation time is the first completed step with no agents remaining.
+For surviving agents after a step, `seeing_exit` counts agents whose selected exit was directly visible at the decision snapshot. `seeing_sign` counts agents whose selected exit had a visible sign but was not directly visible. `memory_guided` counts agents with a selected exit that had neither current cue, even when a different exit was visible. These three choice counts are mutually exclusive. `with_belief` counts agents holding any remembered exit; `no_belief` is the remaining survivors. `blind_committed` counts belief holders who saw no exit or sign for any exit. Escape counts are accumulated per exit; evacuation time is the first completed step with no agents remaining.
 
-Metrics are collected after movement and departure removal, but use visibility and choices from the preceding decision. Mean age and mean uncertainty penalty use the updated clock; maximum commitment distance uses the updated positions. A just-seen exit can already show age $\Delta t$. Peaks are recorded for memory-guided count and commitment distance, while blind commitment is summed as agent-seconds. The CSV contains `t,remaining,remaining_tom0,remaining_tom1,remaining_reactive,escaped,seeing,with_belief,memory_guided,no_belief`; the remaining diagnostics are available separately. In mixed scenes, the type counts follow agents' assigned types even if the T key temporarily overrides their behavior. Mode toggles can leave beliefs from earlier ToM0 steps. In reactive mode, selected-exit age and distance statistics can use zero placeholder memory entries and do not then describe real memories.
+Metrics are collected after movement and departure removal, but use visibility and choices from the preceding decision. Mean age and mean uncertainty penalty use the updated clock; maximum commitment distance uses the updated positions. A just-seen exit can already show age $\Delta t$. Peaks are recorded for memory-guided count and commitment distance, while blind commitment is summed as agent-seconds. The CSV contains `t,remaining,remaining_tom0,remaining_tom1,remaining_reactive,escaped,seeing_exit,seeing_sign,with_belief,memory_guided,no_belief`; the remaining diagnostics are available separately. In mixed scenes, the type counts follow agents' assigned types even if the T key temporarily overrides their behavior. Mode toggles can leave beliefs from earlier ToM0 steps. In reactive mode, selected-exit age and distance statistics can use zero placeholder memory entries and do not then describe real memories.
 
 | Responsibility | Source |
 |---|---|

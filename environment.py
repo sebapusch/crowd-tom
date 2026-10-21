@@ -67,6 +67,7 @@ class Environment:
         self._grid = {}
         self._cell_size = self._compute_visibility()
         self._seen_exits = np.zeros((len(agents), 0), dtype=bool)
+        self._signed_exits = np.zeros((len(agents), 0), dtype=bool)
         self._has_belief = np.zeros((len(agents), 0), dtype=bool)
         self._belief_t = np.zeros((len(agents), 0), dtype=float)
         self._belief_mu = np.zeros((len(agents), 0, 2), dtype=float)
@@ -146,6 +147,8 @@ class Environment:
         self._tom1_changed = self._tom1_changed[keep]
         if self._seen_exits.shape[0] == keep.shape[0]:
             self._seen_exits = self._seen_exits[keep]
+        if self._signed_exits.shape[0] == keep.shape[0]:
+            self._signed_exits = self._signed_exits[keep]
         self._pack_agents()
         self._t += dt
         if len(self.agents) == 0 and self.evacuation_time is None:
@@ -169,7 +172,8 @@ class Environment:
         n = len(self.agents)
         orders = self._agent_tom_orders if self.has_assigned_tom_orders else self._effective_orders()
         e = len(self.exits)
-        seeing = 0
+        seeing_exit = 0
+        seeing_sign = 0
         with_belief = 0
         memory_guided = 0
         blind_committed = 0
@@ -178,17 +182,22 @@ class Environment:
         mean_age = 0.0
         max_commit_distance = 0.0
         if n > 0 and e > 0 and self._has_belief.shape == (n, e):
-            seeing_any = self._seen_exits.any(axis=1) if self._seen_exits.shape == (n, e) else np.zeros(n, dtype=bool)
-            seeing = int(seeing_any.sum())
+            seen_exits = self._seen_exits if self._seen_exits.shape == (n, e) else np.zeros((n, e), dtype=bool)
+            signed_exits = self._signed_exits if self._signed_exits.shape == (n, e) else np.zeros((n, e), dtype=bool)
+            current_cue = seen_exits | signed_exits
             has_any = self._has_belief.any(axis=1)
             with_belief = int(has_any.sum())
             no_belief = n - with_belief
-            blind_committed = int((~seeing_any & has_any).sum())
-            valid = self._chosen_exit >= 0
-            if np.any(valid) and self._seen_exits.shape == (n, e):
+            blind_committed = int((~current_cue.any(axis=1) & has_any).sum())
+            valid = (self._chosen_exit >= 0) & (self._chosen_exit < e)
+            if np.any(valid):
                 rows = np.flatnonzero(valid)
                 chosen = self._chosen_exit[rows]
-                memory_guided = int((~self._seen_exits[rows, chosen]).sum())
+                directly_seen = seen_exits[rows, chosen]
+                sign_seen = signed_exits[rows, chosen] & ~directly_seen
+                seeing_exit = int(directly_seen.sum())
+                seeing_sign = int(sign_seen.sum())
+                memory_guided = int((~directly_seen & ~sign_seen).sum())
                 age = np.maximum(self._t - self._belief_t[rows, chosen], 0.0)
                 mean_age = float(age.mean())
                 mean_uncertainty = float(uncertainty(age, self.tom0.uncertainty_time).mean())
@@ -203,7 +212,8 @@ class Environment:
             'initial': self.initial_agent_count,
             'escaped': escaped,
             'escaped_by_exit': list(self.escaped_by_exit),
-            'seeing': seeing,
+            'seeing_exit': seeing_exit,
+            'seeing_sign': seeing_sign,
             'with_belief': with_belief,
             'memory_guided': memory_guided,
             'tom1_changed': int(self._tom1_changed.sum()),
@@ -249,6 +259,7 @@ class Environment:
             self._heading = np.empty((0, 2), dtype=float)
             self._agent_tom_orders = np.empty(0, dtype=int)
             self._seen_exits = np.zeros((0, len(self.exits)), dtype=bool)
+            self._signed_exits = np.zeros((0, len(self.exits)), dtype=bool)
             self._has_belief = np.zeros((0, len(self.exits)), dtype=bool)
             self._belief_t = np.zeros((0, len(self.exits)), dtype=float)
             self._belief_mu = np.zeros((0, len(self.exits), 2), dtype=float)
@@ -280,6 +291,8 @@ class Environment:
             agent.desired_direction = self._heading[i]
         if self._seen_exits.shape != (n, len(self.exits)):
             self._seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
+        if self._signed_exits.shape != (n, len(self.exits)):
+            self._signed_exits = np.zeros((n, len(self.exits)), dtype=bool)
         self._ensure_beliefs()
 
     def _ensure_beliefs(self) -> None:
@@ -346,6 +359,7 @@ class Environment:
                 self._belief_mu[remember, j] = query.closest_point[remember]
 
         self._seen_exits = seen_exits
+        self._signed_exits = signed_exits
         self._tom1_changed = np.zeros(n, dtype=bool)
         visible_agents = pairwise_visible_mask(
             pos, self._heading, self.obstacles, self.view_range, self.fov_rad,
@@ -398,6 +412,7 @@ class Environment:
                 tom0=params,
                 now=self._t,
                 observer_mask=orders == 1,
+                signs=self.signs,
             )
             use_tom1 = (orders == 1) & (tom1_chosen >= 0)
             direction[use_tom1] = tom_heading[use_tom1]
@@ -406,28 +421,25 @@ class Environment:
             self._tom1_changed = use_tom1 & (tom1_chosen != tom_chosen)
         self._chosen_exit = chosen
 
-        informed = np.where(reactive, available_any, self._has_belief.any(axis=1))
-        fallback = self._follow_or_wander(pos, informed, dt, visible_agents)
+        fallback = self._follow_or_wander(pos, dt, visible_agents)
         return np.where(personal[:, None], direction, fallback)
 
     def _follow_or_wander(
             self,
             pos: np.ndarray,
-            informed: np.ndarray,
             dt: float,
             visible: np.ndarray,
     ) -> np.ndarray:
         n = len(pos)
         turn = self._rng.normal(0.0, self.wander_turn * dt, size=n)
         wander = self._rotate_headings(self._heading, turn)
-        if n < 2 or not np.any(informed):
+        if n < 2:
             return wander
 
         offset = pos[None, :, :] - pos[:, None, :]
         dist = np.linalg.norm(offset, axis=2)
         np.fill_diagonal(dist, np.inf)
         dist[~visible] = np.inf
-        dist[:, ~informed] = np.inf
         nearest = np.argmin(dist, axis=1)
         can_follow = np.isfinite(dist[np.arange(n), nearest])
         follow = unit_rows(pos[nearest] - pos)

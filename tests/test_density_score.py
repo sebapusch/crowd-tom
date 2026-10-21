@@ -41,6 +41,44 @@ class DensityScoreTests(unittest.TestCase):
         expected = 0.36 / (1.0 + np.exp(-penalty))
         self.assertAlmostEqual(demand[0, 0], expected)
 
+    def test_batched_occupancy_respects_each_observers_visible_group(self):
+        pos = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 2.0], [2.0, 2.0]])
+        mu = np.array([
+            [[4.0, 0.0], [0.0, 4.0]],
+            [[4.0, 1.0], [0.0, 3.0]],
+            [[0.0, 0.0], [0.0, 0.0]],
+            [[4.0, 3.0], [0.0, 4.0]],
+        ])
+        modeled = np.array([
+            [False, True, True, False],
+            [True, False, False, True],
+            [False, False, False, False],
+            [False, True, False, False],
+        ])
+        delta = pos[None, :, :] - pos[:, None, :]
+        distance = np.linalg.norm(delta, axis=2)
+        directions = delta / np.maximum(distance[:, :, None], 1e-12)
+        params = ToM0Params(occupancy_range=3.0, occupancy_fov_rad=np.pi / 2)
+        eligible = (distance > 1e-12) & (distance <= params.occupancy_range)
+        actual = ToM1Reasoner(ToM1Params())._estimated_occupancy(
+            pos, mu, np.array([[True, True], [True, True], [False, False], [True, True]]),
+            modeled, np.array([True, True, False, True]), directions, eligible, params,
+        )
+        area = 0.5 * params.occupancy_range**2 * params.occupancy_fov_rad
+        expected = np.zeros_like(actual)
+        for i in (0, 1, 3):
+            group = set(np.flatnonzero(modeled[i])) | {i}
+            for j in range(len(pos)):
+                for k in range(2):
+                    axis = mu[i, k] - pos[j]
+                    axis /= max(np.linalg.norm(axis), 1e-12)
+                    expected[i, j, k] = sum(
+                        eligible[j, other]
+                        and np.dot(directions[j, other], axis) >= np.cos(np.pi / 4)
+                        for other in group
+                    ) / area
+        np.testing.assert_allclose(actual, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

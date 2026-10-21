@@ -77,11 +77,11 @@ When the last agent leaves, the HUD shows **all escaped in Xs** and writes a mod
 
 **Exit signs:** a sign names an exit by its zero-based index in the YAML `exits` list. An agent that can see the sign learns that exit's location even when the exit itself is out of sight. Walls, range, and field of view also apply to signs. ToM-0 and ToM-1 agents remember the information; reactive agents use it only while the sign is visible. Signs appear as numbered teal diamonds.
 
-**Reactive (**`tom_order: none`**):** walk to the nearest *currently* visible door. If none, follow someone who sees a door, else wander.
+**Reactive (**`tom_order: none`**):** walk to the nearest exit indicated by a currently visible door or sign. If none, follow the nearest visible agent; wander if no agent is visible.
 
-**ToM-0 (**`tom_order: 0`**):** on sight, store last-seen time and door position. Uncertainty grows as `age / (age + uncertainty_time)`, reaching 0.5 at `uncertainty_time` seconds. Distance uses the penalty `sqrt(1 + distance / distance_scale) - 1`, with a default `distance_scale` of 10 metres. Observed density in the cone uses `density / (density + occupancy_half_density)`, with a default half-penalty density of 0.04 agents per square metre. Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. If they have never seen any door, they follow a visible informed agent.
+**ToM-0 (**`tom_order: 0`**):** on sight, store last-seen time and door position. Uncertainty grows as `age / (age + uncertainty_time)`, reaching 0.5 at `uncertainty_time` seconds. Distance uses the penalty `sqrt(1 + distance / distance_scale) - 1`, with a default `distance_scale` of 10 metres. Observed density in the cone uses `density / (density + occupancy_half_density)`, with a default half-penalty density of 0.04 agents per square metre. Each step pick the believed door with highest utility (closer, less crowded cone, more certain). They can keep walking to a door they **no longer see**. Without an exit belief, they follow the nearest visible agent or wander if none is visible.
 
-**ToM-1 (**`tom_order: 1`**):** start with each agent's own ToM-0 score. For currently visible agents within `perception.view_range`, estimate their ToM-0 choices using only the observer's exit memories, observed positions, and visible velocity as a heading proxy. Each observer keeps a bounded, expiring record of exits it inferred other agents saw. Predicted exit demand adds a negative, confidence-weighted score term. ToM-1 uses the same forces, movement, and follow/wander fallback as ToM-0. These are heuristic predictions, not direct reads of other agents' private memories.
+**ToM-1 (**`tom_order: 1`**):** start with each agent's own ToM-0 score. For currently visible agents within `perception.view_range`, estimate their ToM-0 choices using the observer's exit memories, observed positions, sign locations, and visible velocity as a heading proxy. Each observer keeps a bounded, expiring record when it infers that another agent could see an exit or a sign for that exit. Predicted exit demand adds a negative, confidence-weighted score term. ToM-1 uses the same forces, movement, and follow/wander fallback as ToM-0. These are heuristic predictions, not direct reads of other agents' private memories.
 
 In an empty rectangle, walking toward a remembered door often **keeps it inside range 40**, so “unseen choice” can stay 0. Pillars, extra walls, or leaving range make ToM-0's unseen choices visible in the HUD. In debug mode, each arrow points along an agent's chosen heading and matches the color of its selected exit; agents following others or wandering have no exit-choice arrow.
 
@@ -137,7 +137,7 @@ obstacles:
 - Seeing a door vs holding a belief vs never seen
 - **ToM-0 unseen choice:** heading to a remembered door that is out of sight (should stay 0 in reactive mode)
 - **ToM-1 changed exit:** agents whose current ToM-1 choice differs from their ToM-0 choice
-- Right panel: remaining agents by type and ToM-state series over time. In a mixed scene, the type counts follow the agents' assigned types even when **T** temporarily overrides their behavior.
+- Right panel: remaining agents by type and selected-exit cue (direct sight, visible sign, or memory) over time. In a mixed scene, the type counts follow the agents' assigned types even when **T** temporarily overrides their behavior.
 
 
 

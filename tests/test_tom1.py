@@ -5,10 +5,11 @@ from pathlib import Path
 import numpy as np
 
 from agent import Agent
-from environment import Environment
+from environment import Environment, ExitSign
 from exit import Exit
 from experiment import build_environment, load_experiment, save_experiment, ExperimentConfig, tom_order_label
 from main import _metrics_path
+from obstacle import Wall
 from tom0 import ToM0Params
 from tom1 import ToM1Params, ToM1Reasoner, demand_penalty
 
@@ -36,6 +37,28 @@ def reasoner_inputs(other_beliefs=False):
 
 
 class ToM1Tests(unittest.TestCase):
+    def test_visible_sign_counts_as_witnessed_neighbor_knowledge(self):
+        inputs = reasoner_inputs(False)
+        inputs["mu"][0, 0] = [8.0, 0.0]
+        inputs["has_belief"][0, 1] = False
+        inputs["obstacles"] = [Wall((5.0, -1.0), (5.0, 1.0))]
+        inputs["signs"] = [ExitSign((3.0, 0.0), 0)]
+        reasoner = ToM1Reasoner(ToM1Params())
+
+        _, _, demand = reasoner.choose(**inputs)
+        self.assertEqual(reasoner.memories[10][11][0], 0.0)
+        self.assertAlmostEqual(demand[0, 0], 1.0)
+
+        blocked = reasoner_inputs(False)
+        blocked["mu"][0, 0] = [8.0, 0.0]
+        blocked["has_belief"][0, 1] = False
+        blocked["obstacles"] = [Wall((2.5, -1.0), (2.5, 1.0))]
+        blocked["signs"] = [ExitSign((3.0, 0.0), 0)]
+        no_sighting = ToM1Reasoner(ToM1Params())
+        _, _, blocked_demand = no_sighting.choose(**blocked)
+        self.assertNotIn(11, no_sighting.memories.get(10, {}))
+        self.assertAlmostEqual(blocked_demand[0, 0], no_sighting.params.knowledge_prior)
+
     def test_low_knowledge_confidence_weakens_demand_penalty(self):
         inputs = reasoner_inputs(False)
         inputs["mu"][0] = [[20.0, 0.0], [-20.0, 0.0]]
@@ -109,7 +132,12 @@ class ToM1Tests(unittest.TestCase):
         reasoner.choose(**inputs)
         self.assertEqual(set(reasoner.memories[0]), {1, 2})
 
-        inputs["now"] = 3.0
+        pos[3, 0] = 0.5
+        inputs["now"] = 1.0
+        reasoner.choose(**inputs)
+        self.assertEqual(set(reasoner.memories[0]), {1, 3})
+
+        inputs["now"] = 4.0
         inputs["visible_agents"] = np.zeros_like(visible)
         reasoner.choose(**inputs)
         self.assertNotIn(0, reasoner.memories)
