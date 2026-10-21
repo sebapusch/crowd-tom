@@ -128,6 +128,10 @@ agents:
   spawn_region:          # optional rectangle for initial agent centers
     min: [10, 10]
     max: [40, 35]
+  # Or use spawn_regions for multiple rectangles (omit spawn_region above):
+  # spawn_regions:
+  #   - {min: [10, 10], max: [40, 35]}
+  #   - {min: [60, 10], max: [90, 35]}
 perception:
   view_range: 40
   fov_deg: 360
@@ -145,7 +149,7 @@ obstacles:
 
 `side` is `north` | `south` | `west` | `east`. `center` is the position **along that wall** (x on north/south, y on east/west).
 
-`agents.spawn_region` limits initial agent centers to the rectangle from `min` to `max`. It must fit inside the room with clearance for each agent's radius. Spawned agents avoid obstacles and each other; an area too small for the requested count raises an error. Omit it to spawn throughout the room as before. See `experiments/train-uneven-doors.yaml` for a cluster near the narrow train doors.
+`agents.spawn_region` limits initial agent centers to one rectangle from `min` to `max`. Use `agents.spawn_regions` for a nonempty list of rectangles; each agent is sampled uniformly from their combined area, including where rectangles overlap. Specify only one of these settings. Every rectangle must fit inside the room with clearance for each agent's radius. Spawned agents avoid obstacles and each other; an area too small for the requested count raises an error. Omit both settings to spawn throughout the room. See `experiments/train-uneven-doors.yaml` for a cluster near the narrow train doors.
 
 ## HUD and plots
 

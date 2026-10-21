@@ -140,6 +140,7 @@ class ExperimentConfig:
     agent_radius: float = 0.3
     desired_speed: float = 2.0
     spawn_region: SpawnRegion | None = None
+    spawn_regions: list[SpawnRegion] | None = None
     view_range: float = 40.0
     fov_deg: float = 360.0
     tom1: ToM1Params = field(default_factory=ToM1Params)
@@ -148,6 +149,12 @@ class ExperimentConfig:
     interior_walls: list[tuple[tuple[float, float], tuple[float, float]]] = field(default_factory=list)
     circles: list[tuple[tuple[float, float], float]] = field(default_factory=list)
     source_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.spawn_region is not None and self.spawn_regions is not None:
+            raise ValueError('Specify either spawn_region or spawn_regions')
+        if self.spawn_regions is not None and not self.spawn_regions:
+            raise ValueError('spawn_regions must be a nonempty list')
 
     def clone(self) -> ExperimentConfig:
         return ExperimentConfig(
@@ -164,6 +171,7 @@ class ExperimentConfig:
             agent_radius=self.agent_radius,
             desired_speed=self.desired_speed,
             spawn_region=self.spawn_region,
+            spawn_regions=list(self.spawn_regions) if self.spawn_regions is not None else None,
             view_range=self.view_range,
             fov_deg=self.fov_deg,
             tom1=self.tom1,
@@ -183,6 +191,11 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     path = Path(path)
     raw = yaml.safe_load(path.read_text()) or {}
     agents = raw.get('agents') or {}
+    if agents.get('spawn_region') is not None and agents.get('spawn_regions') is not None:
+        raise ValueError('Specify either spawn_region or spawn_regions')
+    regions = agents.get('spawn_regions')
+    if regions is not None and (not isinstance(regions, list) or not regions):
+        raise ValueError('spawn_regions must be a nonempty list')
     perception = raw.get('perception') or {}
     obstacles = raw.get('obstacles') or {}
     proportions = raw.get('tom_proportions')
@@ -236,6 +249,8 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
             minimum=_as_point(agents['spawn_region']['min']),
             maximum=_as_point(agents['spawn_region']['max']),
         ) if agents.get('spawn_region') is not None else None),
+        spawn_regions=[SpawnRegion(_as_point(item['min']), _as_point(item['max']))
+                       for item in regions] if regions is not None else None,
         view_range=view_range,
         fov_deg=float(perception.get('fov_deg', 360.0)),
         tom1=ToM1Params(model_range=view_range, **tom1_values),
@@ -274,6 +289,10 @@ def save_experiment(config: ExperimentConfig, path: str | Path) -> Path:
                 'min': list(config.spawn_region.minimum),
                 'max': list(config.spawn_region.maximum),
             }} if config.spawn_region is not None else {}),
+            **({'spawn_regions': [
+                {'min': list(region.minimum), 'max': list(region.maximum)}
+                for region in config.spawn_regions
+            ]} if config.spawn_regions is not None else {}),
         },
         'perception': {
             'view_range': config.view_range,
@@ -330,23 +349,33 @@ def spawn_positions(
         width: float,
         height: float,
         obstacles: list[Obstacle],
-        region: SpawnRegion | None = None,
-        rng: np.random.Generator | None = None,
+    region: SpawnRegion | None = None,
+    rng: np.random.Generator | None = None,
+    regions: list[SpawnRegion] | None = None,
 ) -> np.ndarray:
     if rng is None:
         rng = np.random.default_rng(DEFAULT_TEST_SEED)
+    if region is not None and regions is not None:
+        raise ValueError('Specify either spawn_region or spawn_regions')
+    if regions is not None and not regions:
+        raise ValueError('spawn_regions must be a nonempty list')
     margin = radius + SPAWN_CLEARANCE + 1.0
-    if region is None:
-        lower = np.array([margin, margin], dtype=float)
-        upper = np.array([width - margin, height - margin], dtype=float)
-    else:
+    selected_regions = regions if regions is not None else ([region] if region is not None else [])
+    if selected_regions:
         clearance = radius + SPAWN_CLEARANCE
-        lower = np.array(region.minimum, dtype=float)
-        upper = np.array(region.maximum, dtype=float)
-        if np.any(lower < clearance) or np.any(upper > [width - clearance, height - clearance]):
-            raise ValueError('Spawn region must fit inside the room with agent clearance')
-    if np.any(lower >= upper):
-        raise ValueError('Room has no usable spawn area')
+        bounds = [(np.array(item.minimum, dtype=float), np.array(item.maximum, dtype=float))
+                  for item in selected_regions]
+        for lower, upper in bounds:
+            if np.any(lower < clearance) or np.any(upper > [width - clearance, height - clearance]):
+                raise ValueError('Spawn region must fit inside the room with agent clearance')
+    else:
+        bounds = [(np.array([margin, margin], dtype=float),
+                   np.array([width - margin, height - margin], dtype=float))]
+    for lower, upper in bounds:
+        if np.any(lower >= upper):
+            raise ValueError('Room has no usable spawn area')
+    areas = np.array([np.prod(upper - lower) for lower, upper in bounds])
+    probabilities = areas / areas.sum()
     positions = np.empty((count, 2), dtype=float)
     placed = 0
     attempts = 0
@@ -355,7 +384,14 @@ def spawn_positions(
         if attempts >= max_attempts:
             raise RuntimeError(f'Could not place agent {placed + 1} in spawn area without overlap')
         attempts += 1
+        chosen = rng.choice(len(bounds), p=probabilities) if regions is not None else 0
+        lower, upper = bounds[chosen]
         candidate = lower + rng.random(2) * (upper - lower)
+        if regions is not None:
+            coverage = sum(np.all(candidate >= low) and np.all(candidate <= high)
+                           for low, high in bounds)
+            if rng.random() >= 1.0 / coverage:
+                continue
         if not _position_is_free(candidate, radius, positions[:placed], obstacles):
             continue
         positions[placed] = candidate
@@ -378,6 +414,8 @@ def initial_state_path(config: ExperimentConfig, seed: int, directory: str | Pat
         'agent_count': config.agent_count,
         'agent_radius': config.agent_radius,
         'spawn_region': asdict(config.spawn_region) if config.spawn_region else None,
+        **({'spawn_regions': [asdict(region) for region in config.spawn_regions]}
+           if config.spawn_regions is not None else {}),
         'exits': [asdict(exit_spec) for exit_spec in config.exits],
         'interior_walls': config.interior_walls,
         'circles': config.circles,
@@ -428,6 +466,7 @@ def build_environment(
         positions = spawn_positions(
             config.agent_count, config.agent_radius, config.width,
             config.height, obstacles, config.spawn_region, rng=init_rng,
+            regions=config.spawn_regions,
         )
         angles = init_rng.random(config.agent_count) * 2.0 * pi
         headings = np.column_stack((np.cos(angles), np.sin(angles)))
