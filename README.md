@@ -25,6 +25,8 @@ uv run python main.py experiments/pillar.yaml --seed-range 1000 1004 --max-time 
 
 A single seed opens a pygame window unless the YAML declares `tom_options` or `seed_range`. The default seed is **1000** for testing. A seed range runs inclusively and sequentially without a window, stopping each run when everyone exits or at `--max-time` (default 120 seconds). Use `--dt` to change the headless physics step (default 1/60 second). YAML may contain `seed: 42` or `seed_range: [0, 49]`; command-line `--seed` or `--seed-range` overrides either. Initial IDs, positions, and headings are saved under `experiments/results/initial-states/` and reused for the same seed and spawn geometry across policies; `--results-dir` changes that location. Spawning, type assignment, and wandering use separate seeded streams.
 
+Score tracing defaults to on for ToM-1 runs. Set `score_trace: false` in YAML to disable it, or pass `--score-trace` / `--no-score-trace` to override the YAML setting. The resolved setting is saved in each config snapshot.
+
 ### Bundled scenes (`experiments/`)
 
 
@@ -57,6 +59,8 @@ tom_options:
 ```
 
 This runs every setting for each seed headlessly. Results for a seed share `experiments/results/<experiment-name>/metrics-<seed>.csv`; `tom_config` and `agent_type` identify the rows, and the CSV also records the seed, proportions/order, timestep, and cutoff. Headless metrics are recorded every physics step. `following` and `wandering` count agents using fallback; `selected_exit_0`, `selected_exit_1`, etc. count current exit choices; `departed_exit_0`, etc. count departures during that step; `escaped_exit_0`, etc. are cumulative departures. `switches_step` counts changes between valid exit choices, while `switch_rate` is cumulative switches divided by accumulated agent-seconds. The runner saves each resolved configuration as `config-<seed>-<tom-config>.yaml`. Failed combinations are written to `failures.jsonl`; other combinations continue, and the command exits with an error status if any failed. Existing results for selected seeds are replaced when rerun.
+
+For each traced seed containing ToM-1 agents, `score-trace-<seed>-<tom-config>.csv` records the lowest-ID agent that ever has at least two known exits and valid ToM0/ToM1 choices. It logs the weighted distance, occupancy, uncertainty and predicted-demand terms for the ToM1-selected exit and the exit chosen by same-state ToM0, plus their differences. `alternative_base_total` is the ToM0 score at its chosen exit; `alternative_total` adds ToM1's demand term at that exit, so `delta_total` compares the two exits under the ToM1 rule. Scores come from the actual decision step before movement. If no agent qualifies, the file contains `no_eligible_agent` instead of a trace.
 
 The mixed advantage scene puts 20 agents of each type in the same spawn area. The left exit is nearer but narrow; the right exit is farther but wider. Its ToM-1 demand settings are deliberately strong for a diagnostic demonstration. ToM-1's predicted demand can divert agents from the near queue. Run `uv run python main.py experiments/mixed-tom-advantage.yaml` and press **D** to see choices. The graph shows remaining agents by type.
 

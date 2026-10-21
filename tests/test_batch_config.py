@@ -10,13 +10,14 @@ from unittest.mock import patch
 from experiment import (
     ExperimentConfig, ToMOption, ToMProportions, load_experiment, save_experiment,
 )
+from layout import SideExit
 from main import main, run_seed_range
 
 
 class BatchConfigTests(unittest.TestCase):
     def test_options_and_seed_range_round_trip_and_validate(self):
         config = ExperimentConfig(
-            name='batch-test', agent_count=2, seed_range=(4, 5),
+            name='batch-test', agent_count=2, seed_range=(4, 5), score_trace=False,
             tom_options=[
                 ToMOption(tom_order=-1), ToMOption(tom_order=1),
                 ToMOption(tom_proportions=ToMProportions(0.5, 0.5)),
@@ -26,6 +27,8 @@ class BatchConfigTests(unittest.TestCase):
             scene = save_experiment(config, Path(directory) / 'scene.yaml')
             loaded = load_experiment(scene)
             self.assertEqual(loaded.seed_range, (4, 5))
+            self.assertFalse(loaded.score_trace)
+            self.assertFalse(config.clone().score_trace)
             self.assertEqual([option.label for option in loaded.tom_options],
                              ['reactive', 'tom-1', 'mixed-tom0-0p5-tom1-0p5'])
             for invalid in (
@@ -34,6 +37,7 @@ class BatchConfigTests(unittest.TestCase):
                 'tom_options: []\n',
                 'tom_options: [{tom_order: 0, tom_proportions: {tom0: 0.5, tom1: 0.5}}]\n',
                 'tom_options: [{tom_order: 0}, {tom_order: 0}]\n',
+                'score_trace: maybe\n',
             ):
                 scene.write_text(invalid)
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
@@ -148,6 +152,56 @@ class BatchConfigTests(unittest.TestCase):
             self.assertEqual(failures[0]['seed'], 4)
             self.assertEqual(failures[0]['tom_config'], 'tom-0')
             self.assertIn('deliberate failure', failures[0]['traceback'])
+
+    def test_nonzero_seed_reports_when_no_agent_has_two_exit_choices(self):
+        config = ExperimentConfig(
+            name='no-trace-candidate', width=20, height=20, agent_count=2,
+            exits=[SideExit('east', 10.0, 2.0)],
+            tom_options=[ToMOption(tom_order=1)],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_seed_range(config, 7, 7, 0.1, 0.1, Path(directory))
+            path = Path(directory) / 'no-trace-candidate' / 'score-trace-7-tom-1.csv'
+            with path.open(newline='') as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['status'], 'no_eligible_agent')
+
+    def test_config_and_cli_toggle_traces_for_every_seed(self):
+        config = ExperimentConfig(
+            name='trace-toggle', width=20, height=20, agent_count=2,
+            seed_range=(7, 8), score_trace=False,
+            exits=[SideExit('east', 10.0, 2.0)],
+            tom_options=[ToMOption(tom_order=1)],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            scene = save_experiment(config, Path(directory) / 'scene.yaml')
+            argv = [str(scene), '--dt', '0.1', '--max-time', '0.1',
+                    '--results-dir', directory]
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(argv)
+            for seed in (7, 8):
+                trace = Path(directory) / 'trace-toggle' / f'score-trace-{seed}-tom-1.csv'
+                self.assertFalse(trace.exists())
+                self.assertFalse(load_experiment(trace.parent / f'config-{seed}-tom-1.yaml').score_trace)
+            with contextlib.redirect_stdout(io.StringIO()):
+                main([*argv, '--score-trace'])
+            for seed in (7, 8):
+                trace = Path(directory) / 'trace-toggle' / f'score-trace-{seed}-tom-1.csv'
+                with trace.open(newline='') as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(rows[0]['seed'], str(seed))
+                self.assertEqual(rows[0]['status'], 'no_eligible_agent')
+                self.assertTrue(load_experiment(trace.parent / f'config-{seed}-tom-1.yaml').score_trace)
+            config.score_trace = True
+            save_experiment(config, scene)
+            with contextlib.redirect_stdout(io.StringIO()):
+                main([*argv, '--no-score-trace'])
+            for seed in (7, 8):
+                trace = Path(directory) / 'trace-toggle' / f'score-trace-{seed}-tom-1.csv'
+                self.assertFalse(trace.exists())
+                self.assertFalse(load_experiment(trace.parent / f'config-{seed}-tom-1.yaml').score_trace)
 
 
 if __name__ == '__main__':

@@ -12,8 +12,11 @@ if TYPE_CHECKING:
 
 from exit import Exit
 from perception import pairwise_visible_mask, unit_rows, visible_exit_mask
-from tom0 import ToM0Params, headings_from_beliefs, uncertainty, utilities
-from tom1 import ToM1Params, ToM1Reasoner
+from tom0 import (
+    ToM0Params, distance_penalty, headings_from_beliefs, occupancy_penalty,
+    uncertainty, utilities,
+)
+from tom1 import ToM1Params, ToM1Reasoner, demand_penalty
 
 
 # Newtons
@@ -89,6 +92,9 @@ class Environment:
         self._switches_step_by_type = {agent_type: 0 for agent_type in AGENT_TYPES}
         self._switches_total_by_type = {agent_type: 0 for agent_type in AGENT_TYPES}
         self._agent_seconds_by_type = {agent_type: 0.0 for agent_type in AGENT_TYPES}
+        self.score_trace_enabled = False
+        self.score_trace_agent_id: int | None = None
+        self.score_trace_rows: list[dict] = []
         self.initial_agent_count = len(agents)
         self.escaped_by_exit: list[int] = []
         self.evacuation_time: float | None = None
@@ -530,8 +536,9 @@ class Environment:
             base_scores = utilities(
                 distance, occupancy, age, self._has_belief, params,
             )
-            tom_heading, tom1_chosen, _demand = self.tom1.choose(
-                ids=np.array([agent.idx for agent in self.agents], dtype=int),
+            agent_ids = np.array([agent.idx for agent in self.agents], dtype=int)
+            tom_heading, tom1_chosen, demand = self.tom1.choose(
+                ids=agent_ids,
                 pos=pos,
                 vel=self._vel,
                 mu=self._belief_mu,
@@ -551,6 +558,11 @@ class Environment:
             chosen[use_tom1] = tom1_chosen[use_tom1]
             personal |= use_tom1
             self._tom1_changed = use_tom1 & (tom1_chosen != tom_chosen)
+            if self.score_trace_enabled:
+                self._record_score_trace(
+                    agent_ids, orders, tom_chosen, tom1_chosen,
+                    distance, occupancy, age, demand,
+                )
         self._chosen_exit = chosen
         switched = (previous_choice >= 0) & (chosen >= 0) & (previous_choice != chosen)
         metric_orders = self._agent_tom_orders if self.has_assigned_tom_orders else orders
@@ -563,6 +575,61 @@ class Environment:
         self._following = ~personal & can_follow
         self._wandering = ~personal & ~can_follow
         return np.where(personal[:, None], direction, fallback)
+
+    def _record_score_trace(
+            self, agent_ids: np.ndarray, orders: np.ndarray,
+            tom0_chosen: np.ndarray, tom1_chosen: np.ndarray,
+            distance: np.ndarray, occupancy: np.ndarray,
+            age: np.ndarray, demand: np.ndarray,
+    ) -> None:
+        eligible = (
+            (orders == 1) & (self._has_belief.sum(axis=1) >= 2)
+            & (tom0_chosen >= 0) & (tom1_chosen >= 0)
+        )
+        candidates = np.flatnonzero(eligible)
+        if len(candidates) == 0:
+            return
+        candidate = int(candidates[np.argmin(agent_ids[candidates])])
+        candidate_id = int(agent_ids[candidate])
+        if self.score_trace_agent_id is None or candidate_id < self.score_trace_agent_id:
+            self.score_trace_agent_id = candidate_id
+            self.score_trace_rows.clear()
+        if not eligible[agent_ids == self.score_trace_agent_id].any():
+            return
+        row_index = int(np.flatnonzero(agent_ids == self.score_trace_agent_id)[0])
+        selected_exit = int(tom1_chosen[row_index])
+        tom0_exit = int(tom0_chosen[row_index])
+        params = self.tom0
+        demand_params = self.tom1.params
+
+        def terms(exit_index: int) -> dict[str, float]:
+            values = {
+                'distance': float(params.w_distance * distance_penalty(
+                    distance[row_index, exit_index], params.distance_scale,
+                )),
+                'occupancy': float(params.w_occupancy * occupancy_penalty(
+                    occupancy[row_index, exit_index], params.occupancy_half_density,
+                )),
+                'uncertainty': float(params.w_uncertainty * uncertainty(
+                    age[row_index, exit_index], params.uncertainty_time,
+                )),
+                'demand': float(demand_params.demand_weight * demand_penalty(
+                    demand[row_index, exit_index], demand_params.demand_half_count,
+                )),
+            }
+            values['base_total'] = values['distance'] + values['occupancy'] + values['uncertainty']
+            values['total'] = values['base_total'] + values['demand']
+            return values
+
+        selected = terms(selected_exit)
+        baseline = terms(tom0_exit)
+        self.score_trace_rows.append({
+            'status': 'decision', 't': self._t, 'agent_id': self.score_trace_agent_id,
+            'selected_exit': selected_exit, 'tom0_exit': tom0_exit,
+            **{f'selected_{key}': value for key, value in selected.items()},
+            **{f'alternative_{key}': value for key, value in baseline.items()},
+            **{f'delta_{key}': selected[key] - baseline[key] for key in selected},
+        })
 
     def _follow_or_wander(
             self,

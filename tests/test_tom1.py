@@ -1,3 +1,4 @@
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from agent import Agent
 from environment import Environment, ExitSign
 from exit import Exit
 from experiment import build_environment, load_experiment, save_experiment, ExperimentConfig, tom_order_label
-from main import _metrics_path
+from main import _metrics_path, _save_score_trace
 from obstacle import Wall
 from tom0 import ToM0Params
 from tom1 import ToM1Params, ToM1Reasoner, demand_penalty
@@ -182,10 +183,30 @@ class ToM1Tests(unittest.TestCase):
         tom0_choice = int(env._chosen_exit[0])
 
         env.tom_order = 1
+        env.score_trace_enabled = True
         env._desired_directions(env._pos, 1 / 60)
         self.assertEqual(tom0_choice, 0)
         self.assertEqual(env._chosen_exit[0], 1)
         self.assertEqual(env.tom0_metrics()["tom1_changed"], 1)
+        self.assertEqual(env.score_trace_agent_id, 0)
+        trace = env.score_trace_rows[0]
+        self.assertEqual((trace['selected_exit'], trace['tom0_exit']), (1, 0))
+        self.assertGreater(trace['delta_total'], 0)
+        for prefix in ('selected', 'alternative'):
+            self.assertAlmostEqual(
+                trace[f'{prefix}_total'],
+                sum(trace[f'{prefix}_{term}'] for term in
+                    ('distance', 'occupancy', 'uncertainty', 'demand')),
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            path = _save_score_trace(
+                env, ExperimentConfig(name='trace-test', tom_order=1), 0, Path(directory),
+            )
+            with path.open(newline='') as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['agent_id'], '0')
+            self.assertEqual(rows[0]['tom_config'], 'tom-1')
 
     def test_yaml_round_trip_and_mode_label(self):
         config = ExperimentConfig(

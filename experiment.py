@@ -135,6 +135,7 @@ class ExperimentConfig:
     tom_options: list[ToMOption] | None = None
     seed: int | None = None
     seed_range: tuple[int, int] | None = None
+    score_trace: bool = True
     agent_count: int = 400
     agent_radius: float = 0.3
     desired_speed: float = 2.0
@@ -158,6 +159,7 @@ class ExperimentConfig:
             tom_options=list(self.tom_options) if self.tom_options is not None else None,
             seed=self.seed,
             seed_range=self.seed_range,
+            score_trace=self.score_trace,
             agent_count=self.agent_count,
             agent_radius=self.agent_radius,
             desired_speed=self.desired_speed,
@@ -186,6 +188,8 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     proportions = raw.get('tom_proportions')
     if 'seed' in raw and 'seed_range' in raw:
         raise ValueError('Specify either seed or seed_range in the config')
+    if not isinstance(raw.get('score_trace', True), bool):
+        raise ValueError('score_trace must be true or false')
     exits: list[SideExit] = []
     for item in raw.get('exits') or []:
         if 'side' in item:
@@ -224,6 +228,7 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
         tom_options=_tom_options(raw['tom_options']) if 'tom_options' in raw else None,
         seed=_seed(raw['seed'], 'seed') if 'seed' in raw else None,
         seed_range=_seed_range(raw['seed_range']) if 'seed_range' in raw else None,
+        score_trace=raw.get('score_trace', True),
         agent_count=int(agents.get('count', raw.get('agent_count', 400))),
         agent_radius=float(agents.get('radius', 0.3)),
         desired_speed=float(agents.get('desired_speed', 2.0)),
@@ -260,6 +265,7 @@ def save_experiment(config: ExperimentConfig, path: str | Path) -> Path:
         ]} if config.tom_options is not None else {}),
         **({'seed': config.seed} if config.seed is not None else {}),
         **({'seed_range': list(config.seed_range)} if config.seed_range is not None else {}),
+        'score_trace': config.score_trace,
         'agents': {
             'count': config.agent_count,
             'radius': config.agent_radius,

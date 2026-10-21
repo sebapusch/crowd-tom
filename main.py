@@ -1,5 +1,7 @@
 import argparse
+import csv
 from datetime import datetime, timezone
+import io
 import json
 import os
 import re
@@ -44,6 +46,13 @@ CHOICE_COLORS = (
 EXPERIMENT_DIR = Path(__file__).parent / 'experiments'
 DEFAULT_EXPERIMENT = EXPERIMENT_DIR / 'two-north-one-south.yaml'
 DEFAULT_RESULTS_DIR = EXPERIMENT_DIR / 'results'
+SCORE_TRACE_TERMS = ('distance', 'occupancy', 'uncertainty', 'demand', 'base_total', 'total')
+SCORE_TRACE_COLUMNS = (
+    'seed', 'tom_config', 'status', 't', 'agent_id', 'selected_exit', 'tom0_exit',
+    *(f'selected_{term}' for term in SCORE_TRACE_TERMS),
+    *(f'alternative_{term}' for term in SCORE_TRACE_TERMS),
+    *(f'delta_{term}' for term in SCORE_TRACE_TERMS),
+)
 
 
 def _metrics_path(config: ExperimentConfig, seed: int, results_dir: Path = DEFAULT_RESULTS_DIR) -> Path:
@@ -80,6 +89,33 @@ def _save_metrics(
     temporary_path.write_text(content)
     temporary_path.replace(path)
     return path
+
+
+def _save_score_trace(
+        environment: Environment, config: ExperimentConfig, seed: int,
+        results_dir: Path,
+) -> Path:
+    label = _tom_option(config).label
+    path = _score_trace_path(config, seed, results_dir)
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=SCORE_TRACE_COLUMNS)
+    writer.writeheader()
+    rows = environment.score_trace_rows or [{'status': 'no_eligible_agent'}]
+    for row in rows:
+        writer.writerow({'seed': seed, 'tom_config': label, **row})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix('.csv.tmp')
+    temporary_path.write_text(output.getvalue())
+    temporary_path.replace(path)
+    return path
+
+
+def _score_trace_path(
+        config: ExperimentConfig, seed: int, results_dir: Path,
+        label: str | None = None,
+) -> Path:
+    label = label or _tom_option(config).label
+    return _metrics_path(config, seed, results_dir).parent / f'score-trace-{seed}-{label}.csv'
 
 
 COLORS = {
@@ -290,6 +326,7 @@ def run_simulation(
         results_dir: Path = DEFAULT_RESULTS_DIR,
 ) -> None:
     environment = build_environment(config, seed=seed, initial_state_dir=results_dir / 'initial-states')
+    environment.score_trace_enabled = config.score_trace
     scale = SIM_SIZE / environment.width
 
     pygame.init()
@@ -323,6 +360,7 @@ def run_simulation(
         nonlocal environment, reported_done, accumulator, sprites
         nonlocal congestion_totals, congestion_peaks, congestion_samples
         environment = build_environment(config, seed=seed, initial_state_dir=results_dir / 'initial-states')
+        environment.score_trace_enabled = config.score_trace
         congestion_totals = [0] * len(environment.exits)
         congestion_peaks = [0] * len(environment.exits)
         congestion_samples = 0
@@ -388,6 +426,8 @@ def run_simulation(
                 elif event.key == pygame.K_g:
                     path = _save_metrics(history, config, seed, results_dir)
                     print(f'saved metrics {path}')
+                    if config.score_trace and environment.score_trace_rows:
+                        print(f'saved score trace {_save_score_trace(environment, config, seed, results_dir)}')
                 elif event.key == pygame.K_BACKSPACE and edit_mode:
                     if config.circles:
                         config.circles.pop()
@@ -476,6 +516,9 @@ def run_simulation(
             save_auc_plot(history, str(plot_path))
             print(f"Saved AUC plot to {plot_path}")
             csv_path = _save_metrics(history, config, seed, results_dir)
+            if config.score_trace and (environment.score_trace_rows or config.tom_order == 1
+                                       or (config.tom_proportions is not None and config.tom_proportions.tom1 > 0)):
+                _save_score_trace(environment, config, seed, results_dir)
             reported_done = True
 
         draw(
@@ -486,6 +529,8 @@ def run_simulation(
 
     if not reported_done:
         _save_metrics(history, config, seed, results_dir)
+        if config.score_trace and environment.score_trace_rows:
+            _save_score_trace(environment, config, seed, results_dir)
     pygame.quit()
 
 
@@ -509,6 +554,8 @@ def run_seed_range(
             progress_interval = max_time / 10
             next_sim_report = progress_interval
             label = option.label
+            trace_path = _score_trace_path(config, seed, results_dir, label)
+            trace_path.unlink(missing_ok=True)
             print(f'run {run_number}/{total_runs}, seed {seed}, {label}: starting', flush=True)
             try:
                 resolved = option.apply(config)
@@ -519,6 +566,11 @@ def run_seed_range(
                 environment = build_environment(
                     resolved, seed=seed, initial_state_dir=results_dir / 'initial-states',
                 )
+                has_tom1 = (
+                    resolved.tom_order == 1 if resolved.tom_proportions is None
+                    else resolved.tom_proportions.tom1 > 0
+                )
+                environment.score_trace_enabled = resolved.score_trace and has_tom1
                 history = History()
                 history.record(environment.tom0_metrics())
                 while environment.agents and environment._t < max_time:
@@ -541,6 +593,9 @@ def run_seed_range(
                 history.record(stats)
                 _save_metrics(history, resolved, seed, results_dir,
                               append=saved_any, dt=dt, max_time=max_time)
+                if environment.score_trace_enabled:
+                    trace_path = _save_score_trace(environment, resolved, seed, results_dir)
+                    print(f'saved score trace {trace_path}', flush=True)
                 saved_any = True
                 summaries.append({'seed': seed, 'tom_config': label, 'escaped': stats['escaped'],
                                   'remaining': stats['n'], 'time': stats['t']})
@@ -583,6 +638,11 @@ def main(argv: list[str] | None = None) -> None:
                         help='physics timestep for --seed-range (default: 1/60)')
     parser.add_argument('--results-dir', type=Path, default=DEFAULT_RESULTS_DIR,
                         help='directory for metrics and saved initial crowds')
+    trace_flags = parser.add_mutually_exclusive_group()
+    trace_flags.add_argument('--score-trace', dest='score_trace', action='store_true', default=None,
+                             help='save an explanatory ToM-1 score trace for each seed')
+    trace_flags.add_argument('--no-score-trace', dest='score_trace', action='store_false',
+                             help='disable explanatory score traces')
     args = parser.parse_args(argv)
     if args.seed is not None and args.seed < 0:
         parser.error('--seed must be nonnegative')
@@ -596,6 +656,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error('--dt must be positive and finite')
     catalog = list_experiments(EXPERIMENT_DIR)
     config = load_experiment(args.experiment)
+    if args.score_trace is not None:
+        config.score_trace = args.score_trace
     selected_range = (
         tuple(args.seed_range) if args.seed_range is not None else
         (args.seed, args.seed) if args.seed is not None else
