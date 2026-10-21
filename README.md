@@ -23,7 +23,7 @@ uv run python main.py experiments/pillar.yaml --seed 42
 uv run python main.py experiments/pillar.yaml --seed-range 1000 1004 --max-time 120
 ```
 
-A single seed opens a pygame window: the room on the left, live plots on the right. The default seed is **1000** for testing. `--seed-range START END` runs every seed in that inclusive range sequentially without a window, stopping each run when everyone exits or at `--max-time` (default 120 seconds). Use `--dt` to change the range run's physics step (default 1/60 second). Initial IDs, positions, and headings are saved under `experiments/results/initial-states/` and reused for the same seed and spawn geometry across policies; `--results-dir` changes that location. Spawning, type assignment, and wandering use separate seeded streams.
+A single seed opens a pygame window unless the YAML declares `tom_options` or `seed_range`. The default seed is **1000** for testing. A seed range runs inclusively and sequentially without a window, stopping each run when everyone exits or at `--max-time` (default 120 seconds). Use `--dt` to change the headless physics step (default 1/60 second). YAML may contain `seed: 42` or `seed_range: [0, 49]`; command-line `--seed` or `--seed-range` overrides either. Initial IDs, positions, and headings are saved under `experiments/results/initial-states/` and reused for the same seed and spawn geometry across policies; `--results-dir` changes that location. Spawning, type assignment, and wandering use separate seeded streams.
 
 ### Bundled scenes (`experiments/`)
 
@@ -44,6 +44,19 @@ A single seed opens a pygame window: the room on the left, live plots on the rig
 To see the ToM difference directly, run `uv run python main.py experiments/tom1-demand-contrast.yaml` and press **D** for colored exit-choice arrows. The scene starts in ToM-1 mode; press **T** twice to reach ToM-0 on the same crowd. Its ToM-1 parameters deliberately make the predicted-demand effect easy to see.
 
 For a mixed population, add `tom_proportions: {tom0: 0.6, tom1: 0.4}` at the top level. Both values must be between 0 and 1 and sum to 1. The simulator rounds the ToM-1 count to the nearest agent, assigns types randomly at spawn, and keeps each agent's type for the run. This setting takes precedence over `tom_order`. See `experiments/mixed-tom-advantage.yaml`.
+
+To compare several policies on the same scene, add a top-level `tom_options` list. Each entry has exactly one `tom_order` or `tom_proportions` setting:
+
+```yaml
+seed_range: [0, 49]
+tom_options:
+  - {tom_order: reactive}
+  - {tom_order: 0}
+  - {tom_order: 1}
+  - {tom_proportions: {tom0: 0.5, tom1: 0.5}}
+```
+
+This runs every setting for each seed headlessly. Results for a seed share `experiments/results/<experiment-name>/metrics-<seed>.csv`; `tom_config` and `agent_type` identify the rows, and the CSV also records the seed, proportions/order, timestep, and cutoff. The runner saves each resolved configuration as `config-<seed>-<tom-config>.yaml`. Failed combinations are written to `failures.jsonl`; other combinations continue, and the command exits with an error status if any failed. Existing results for selected seeds are replaced when rerun.
 
 The mixed advantage scene puts 20 agents of each type in the same spawn area. The left exit is nearer but narrow; the right exit is farther but wider. Its ToM-1 demand settings are deliberately strong for a diagnostic demonstration. ToM-1's predicted demand can divert agents from the near queue. Run `uv run python main.py experiments/mixed-tom-advantage.yaml` and press **D** to see choices. The graph shows remaining agents by type.
 
@@ -66,11 +79,11 @@ Results vary by seed, so compare the across-seed summary rather than a single ru
 | Click a wall edge | In edit mode: add a width-3 door on that side                         |
 | Backspace         | Undo last circle, interior wall, or door                              |
 | F                 | Save current layout to `experiments/last.yaml` (gitignored)           |
-| G                 | Save plot time series to `experiments/last-metrics-<mode>-seed-<N>.csv` (gitignored) |
+| G                 | Save metric time series to `experiments/results/<experiment-name>/metrics-<seed>.csv` (gitignored) |
 | D                 | Debug: each chosen exit gets a color; arrows show agents' chosen headings |
 
 
-When the last agent leaves, the HUD shows **all escaped in Xs** and writes a mode-specific metrics CSV.
+When the last agent leaves, the HUD shows **all escaped in Xs** and writes a metrics CSV.
 
 ## What the agents do
 

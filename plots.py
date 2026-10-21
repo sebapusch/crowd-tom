@@ -75,8 +75,10 @@ class History:
         self.memory_guided.clear()
         self.no_belief.clear()
 
-    def to_csv(self) -> str:
+    def to_csv(self, metadata: dict | None = None) -> str:
         columns = (
+            'seed', 'tom_config', 'tom_order', 'tom0_proportion', 'tom1_proportion',
+            'dt', 'max_time',
             't', 'agent_type', 'initial', 'remaining', 'escaped', 'seeing_exit',
             'seeing_sign', 'with_belief', 'memory_guided', 'no_belief',
             'tom1_changed', 'blind_committed', 'mean_uncertainty', 'mean_age',
@@ -87,7 +89,7 @@ class History:
         writer = csv.DictWriter(output, fieldnames=columns)
         writer.writeheader()
         for row in self.type_rows:
-            writer.writerow(row)
+            writer.writerow({**(metadata or {}), **row})
         return output.getvalue()
 
     def auc(self) -> dict[str, float]:

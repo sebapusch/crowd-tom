@@ -1,7 +1,10 @@
 import argparse
+from datetime import datetime, timezone
+import json
 import os
 import re
 import statistics
+import traceback
 from time import monotonic
 from pathlib import Path
 
@@ -15,6 +18,7 @@ from pygame.surface import SurfaceType
 from environment import Environment
 from experiment import (
     ExperimentConfig,
+    ToMOption,
     DEFAULT_TEST_SEED,
     build_environment,
     list_experiments,
@@ -47,10 +51,34 @@ def _metrics_path(config: ExperimentConfig, seed: int, results_dir: Path = DEFAU
     return results_dir / name / f'metrics-{seed}.csv'
 
 
-def _save_metrics(history: History, config: ExperimentConfig, seed: int, results_dir: Path) -> Path:
+def _tom_option(config: ExperimentConfig) -> ToMOption:
+    if config.tom_proportions is not None:
+        return ToMOption(tom_proportions=config.tom_proportions)
+    return ToMOption(tom_order=config.tom_order)
+
+
+def _save_metrics(
+        history: History, config: ExperimentConfig, seed: int, results_dir: Path,
+        append: bool = False, dt: float = 1 / 60, max_time: float | None = None,
+) -> Path:
     path = _metrics_path(config, seed, results_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(history.to_csv())
+    option = _tom_option(config)
+    proportions = option.tom_proportions
+    content = history.to_csv({
+        'seed': seed,
+        'tom_config': option.label,
+        'tom_order': option.tom_order if option.tom_order is not None else '',
+        'tom0_proportion': proportions.tom0 if proportions is not None else '',
+        'tom1_proportion': proportions.tom1 if proportions is not None else '',
+        'dt': dt,
+        'max_time': max_time if max_time is not None else '',
+    })
+    if append and path.exists():
+        content = path.read_text() + content.partition('\n')[2]
+    temporary_path = path.with_suffix('.csv.tmp')
+    temporary_path.write_text(content)
+    temporary_path.replace(path)
     return path
 
 
@@ -465,51 +493,78 @@ def run_seed_range(
         config: ExperimentConfig, start: int, end: int,
         dt: float, max_time: float, results_dir: Path,
 ) -> list[dict]:
-    """Run an inclusive seed range headlessly, one completed run at a time."""
+    """Run every configured ToM setting for each seed, logging individual failures."""
     summaries = []
-    total_seeds = end - start + 1
-    for run_number, seed in enumerate(range(start, end + 1), start=1):
-        started_at = monotonic()
-        last_report_at = started_at
-        progress_interval = max_time / 10
-        next_sim_report = progress_interval
-        print(f'run {run_number}/{total_seeds}, seed {seed}: starting', flush=True)
-        environment = build_environment(
-            config, seed=seed, initial_state_dir=results_dir / 'initial-states',
-        )
-        history = History()
-        history.record(environment.tom0_metrics())
-        next_record = 0.5
-        while environment.agents and environment._t < max_time:
-            environment.tick(min(dt, max_time - environment._t))
-            if environment._t + 1e-9 >= next_record:
+    options = config.tom_options or [_tom_option(config)]
+    total_runs = (end - start + 1) * len(options)
+    failure_path = _metrics_path(config, start, results_dir).parent / 'failures.jsonl'
+    for seed in range(start, end + 1):
+        metrics_path = _metrics_path(config, seed, results_dir)
+        metrics_path.unlink(missing_ok=True)
+        saved_any = False
+        for option_index, option in enumerate(options):
+            run_number = (seed - start) * len(options) + option_index + 1
+            started_at = monotonic()
+            last_report_at = started_at
+            progress_interval = max_time / 10
+            next_sim_report = progress_interval
+            label = option.label
+            print(f'run {run_number}/{total_runs}, seed {seed}, {label}: starting', flush=True)
+            try:
+                resolved = option.apply(config)
+                resolved.seed = seed
+                resolved.seed_range = None
+                snapshot = metrics_path.parent / f'config-{seed}-{label}.yaml'
+                save_experiment(resolved, snapshot)
+                environment = build_environment(
+                    resolved, seed=seed, initial_state_dir=results_dir / 'initial-states',
+                )
+                history = History()
                 history.record(environment.tom0_metrics())
-                next_record += 0.5
-            now = monotonic()
-            if (environment.agents and environment._t < max_time
-                    and (environment._t >= next_sim_report or now - last_report_at >= 10)):
+                next_record = 0.5
+                while environment.agents and environment._t < max_time:
+                    environment.tick(min(dt, max_time - environment._t))
+                    if environment._t + 1e-9 >= next_record:
+                        history.record(environment.tom0_metrics())
+                        next_record += 0.5
+                    now = monotonic()
+                    if (environment.agents and environment._t < max_time
+                            and (environment._t >= next_sim_report or now - last_report_at >= 10)):
+                        print(
+                            f'run {run_number}/{total_runs}, seed {seed}, {label}: '
+                            f'{100 * environment._t / max_time:.0f}% '
+                            f'({environment._t:.1f}/{max_time:.1f}s simulated), '
+                            f'{len(environment.agents)}/{environment.initial_agent_count} remaining, '
+                            f'{now - started_at:.1f}s elapsed',
+                            flush=True,
+                        )
+                        next_sim_report = (int(environment._t / progress_interval) + 1) * progress_interval
+                        last_report_at = now
+                stats = environment.tom0_metrics()
+                history.record(stats)
+                _save_metrics(history, resolved, seed, results_dir,
+                              append=saved_any, dt=dt, max_time=max_time)
+                saved_any = True
+                summaries.append({'seed': seed, 'tom_config': label, 'escaped': stats['escaped'],
+                                  'remaining': stats['n'], 'time': stats['t']})
                 print(
-                    f'run {run_number}/{total_seeds}, seed {seed}: '
-                    f'{100 * environment._t / max_time:.0f}% '
-                    f'({environment._t:.1f}/{max_time:.1f}s simulated), '
-                    f'{len(environment.agents)}/{environment.initial_agent_count} remaining, '
-                    f'{now - started_at:.1f}s elapsed',
+                    f"run {run_number}/{total_runs}, seed {seed}, {label}: finished; "
+                    f"escaped {stats['escaped']}/{stats['initial']}, "
+                    f"remaining {stats['n']}, simulated {stats['t']:.3f}s, "
+                    f"elapsed {monotonic() - started_at:.1f}s; saved {metrics_path}",
                     flush=True,
                 )
-                next_sim_report = (int(environment._t / progress_interval) + 1) * progress_interval
-                last_report_at = now
-        stats = environment.tom0_metrics()
-        history.record(stats)
-        metrics_path = _save_metrics(history, config, seed, results_dir)
-        summaries.append({'seed': seed, 'escaped': stats['escaped'],
-                          'remaining': stats['n'], 'time': stats['t']})
-        print(
-            f"run {run_number}/{total_seeds}, seed {seed}: finished; "
-            f"escaped {stats['escaped']}/{stats['initial']}, "
-            f"remaining {stats['n']}, simulated {stats['t']:.3f}s, "
-            f"elapsed {monotonic() - started_at:.1f}s; saved {metrics_path}",
-            flush=True,
-        )
+            except Exception as error:
+                failure_path.parent.mkdir(parents=True, exist_ok=True)
+                with failure_path.open('a') as failure_log:
+                    failure_log.write(json.dumps({
+                        'time_utc': datetime.now(timezone.utc).isoformat(),
+                        'seed': seed, 'tom_config': label, 'dt': dt, 'max_time': max_time,
+                        'error_type': type(error).__name__, 'error': str(error),
+                        'traceback': traceback.format_exc(),
+                    }) + '\n')
+                summaries.append({'seed': seed, 'tom_config': label, 'error': str(error)})
+                print(f'run {run_number}/{total_runs}, seed {seed}, {label}: FAILED: {error}; logged {failure_path}', flush=True)
     return summaries
 
 
@@ -522,9 +577,9 @@ def main(argv: list[str] | None = None) -> None:
         help='YAML experiment file',
     )
     seeds = parser.add_mutually_exclusive_group()
-    seeds.add_argument('--seed', type=int, help=f'single run seed (default: {DEFAULT_TEST_SEED})')
+    seeds.add_argument('--seed', type=int, help=f'single run seed (overrides config; default: {DEFAULT_TEST_SEED})')
     seeds.add_argument('--seed-range', nargs=2, type=int, metavar=('START', 'END'),
-                       help='run every seed from START through END, inclusive, headlessly')
+                       help='run every seed from START through END, inclusive, headlessly (overrides config)')
     parser.add_argument('--max-time', type=float, default=120.0,
                         help='simulation cutoff in seconds for --seed-range (default: 120)')
     parser.add_argument('--dt', type=float, default=1 / 60,
@@ -544,11 +599,23 @@ def main(argv: list[str] | None = None) -> None:
         parser.error('--dt must be positive and finite')
     catalog = list_experiments(EXPERIMENT_DIR)
     config = load_experiment(args.experiment)
-    if args.seed_range is not None:
-        run_seed_range(config, start, end, args.dt, args.max_time, args.results_dir)
+    selected_range = (
+        tuple(args.seed_range) if args.seed_range is not None else
+        (args.seed, args.seed) if args.seed is not None else
+        config.seed_range if config.seed_range is not None else
+        (config.seed, config.seed) if config.seed is not None else
+        (DEFAULT_TEST_SEED, DEFAULT_TEST_SEED)
+    )
+    headless = args.seed_range is not None or config.seed_range is not None or config.tom_options is not None
+    if headless:
+        start, end = selected_range
+        run_seed_range_results = run_seed_range(config, start, end, args.dt, args.max_time, args.results_dir)
+        # Every planned combination was attempted; report failure through the process exit code.
+        if any('error' in result for result in run_seed_range_results):
+            raise SystemExit(1)
     else:
         run_simulation(config, catalog, fps=60,
-                       seed=args.seed if args.seed is not None else DEFAULT_TEST_SEED,
+                       seed=selected_range[0],
                        results_dir=args.results_dir)
 
 

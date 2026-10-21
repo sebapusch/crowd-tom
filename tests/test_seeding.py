@@ -125,9 +125,9 @@ class SeedingTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 run_seed_range(config, 3, 3, 0.1, 1.0, Path(directory))
             log = output.getvalue()
-            self.assertIn('run 1/1, seed 3: starting', log)
+            self.assertIn('run 1/1, seed 3, tom-0: starting', log)
             self.assertIn('remaining,', log)
-            self.assertIn('run 1/1, seed 3: finished;', log)
+            self.assertIn('run 1/1, seed 3, tom-0: finished;', log)
             self.assertIn('metrics-3.csv', log)
 
 
