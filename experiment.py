@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from math import cos, isfinite, pi, sin
+import hashlib
+import json
+from math import isfinite, pi
 from pathlib import Path
-from random import random, shuffle
 from typing import Any
 
 import numpy as np
 import yaml
 
 from agent import Agent
-from environment import Environment, ExitSign
+from environment import DEFAULT_TEST_SEED, Environment, ExitSign
 from exit import Exit
 from layout import SideExit, exit_segment, perimeter_walls
 from obstacle import Circle, Obstacle, Wall
@@ -245,7 +246,10 @@ def spawn_positions(
         height: float,
         obstacles: list[Obstacle],
         region: SpawnRegion | None = None,
+        rng: np.random.Generator | None = None,
 ) -> np.ndarray:
+    if rng is None:
+        rng = np.random.default_rng(DEFAULT_TEST_SEED)
     margin = radius + SPAWN_CLEARANCE + 1.0
     if region is None:
         lower = np.array([margin, margin], dtype=float)
@@ -266,7 +270,7 @@ def spawn_positions(
         if attempts >= max_attempts:
             raise RuntimeError(f'Could not place agent {placed + 1} in spawn area without overlap')
         attempts += 1
-        candidate = lower + np.array([random(), random()]) * (upper - lower)
+        candidate = lower + rng.random(2) * (upper - lower)
         if not _position_is_free(candidate, radius, positions[:placed], obstacles):
             continue
         positions[placed] = candidate
@@ -280,7 +284,35 @@ def spawn_positions(
     return positions
 
 
-def build_environment(config: ExperimentConfig) -> Environment:
+def initial_state_path(config: ExperimentConfig, seed: int, directory: str | Path) -> Path:
+    """Key saved starts by spawn geometry, independent of the decision policy."""
+    geometry = {
+        'version': 1,
+        'width': config.width,
+        'height': config.height,
+        'agent_count': config.agent_count,
+        'agent_radius': config.agent_radius,
+        'spawn_region': asdict(config.spawn_region) if config.spawn_region else None,
+        'exits': [asdict(exit_spec) for exit_spec in config.exits],
+        'interior_walls': config.interior_walls,
+        'circles': config.circles,
+    }
+    digest = hashlib.sha256(json.dumps(geometry, sort_keys=True).encode()).hexdigest()[:16]
+    return Path(directory) / digest / f'seed-{seed}.npz'
+
+
+def build_environment(
+        config: ExperimentConfig,
+        seed: int = DEFAULT_TEST_SEED,
+        initial_state_dir: str | Path | None = None,
+) -> Environment:
+    if seed < 0:
+        raise ValueError('seed must be nonnegative')
+    init_stream, assignment_stream, wander_stream = np.random.SeedSequence(seed).spawn(3)
+    init_rng = np.random.default_rng(init_stream)
+    assignment_rng = np.random.default_rng(assignment_stream)
+    wander_rng = np.random.default_rng(wander_stream)
+
     side_exits = [Exit(*exit_segment(config.width, config.height, spec)) for spec in config.exits]
     obstacles: list[Obstacle] = list(perimeter_walls(config.width, config.height, config.exits))
     for start, end in config.interior_walls:
@@ -288,33 +320,57 @@ def build_environment(config: ExperimentConfig) -> Environment:
     for center, radius in config.circles:
         obstacles.append(Circle(center, radius))
 
+    state_path = (
+        initial_state_path(config, seed, initial_state_dir)
+        if initial_state_dir is not None else None
+    )
+    if state_path is not None and state_path.exists():
+        with np.load(state_path, allow_pickle=False) as saved:
+            ids = saved['ids']
+            positions = saved['positions']
+            headings = saved['headings']
+        if (
+            ids.shape != (config.agent_count,)
+            or positions.shape != (config.agent_count, 2)
+            or headings.shape != (config.agent_count, 2)
+            or not np.array_equal(ids, np.arange(config.agent_count))
+            or not np.isfinite(positions).all()
+            or not np.isfinite(headings).all()
+        ):
+            raise ValueError(f'Invalid saved initial crowd: {state_path}')
+    else:
+        ids = np.arange(config.agent_count)
+        positions = spawn_positions(
+            config.agent_count, config.agent_radius, config.width,
+            config.height, obstacles, config.spawn_region, rng=init_rng,
+        )
+        angles = init_rng.random(config.agent_count) * 2.0 * pi
+        headings = np.column_stack((np.cos(angles), np.sin(angles)))
+        if state_path is not None:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(state_path, ids=ids, positions=positions, headings=headings)
+
     assigned_orders = None
     if config.tom_proportions is not None:
         tom1_count = int(config.agent_count * config.tom_proportions.tom1 + 0.5)
-        assigned_orders = [1] * tom1_count + [0] * (config.agent_count - tom1_count)
-        shuffle(assigned_orders)
+        assigned_orders = np.array(
+            [1] * tom1_count + [0] * (config.agent_count - tom1_count), dtype=int,
+        )
+        assignment_rng.shuffle(assigned_orders)
 
     agents = []
-    for i, agent_pos in enumerate(spawn_positions(
-            config.agent_count,
-            config.agent_radius,
-            config.width,
-            config.height,
-            obstacles,
-            config.spawn_region,
-    )):
-        angle = random() * 2.0 * pi
+    for i, agent_pos in enumerate(positions):
         agents.append(Agent(
             social_repulsion=(2e3, 0.08),
-            idx=i,
+            idx=int(ids[i]),
             mass=1.0,
             radius=config.agent_radius,
             position=np.array(agent_pos, dtype=float, copy=True),
             velocity=np.zeros(2, dtype=float),
             desired_speed=np.float32(config.desired_speed),
-            desired_direction=np.array([cos(angle), sin(angle)], dtype=float),
+            desired_direction=np.array(headings[i], dtype=float, copy=True),
             tau=1.0,
-            tom_order=assigned_orders[i] if assigned_orders is not None else None,
+            tom_order=int(assigned_orders[i]) if assigned_orders is not None else None,
         ))
 
     environment = Environment(
@@ -325,6 +381,7 @@ def build_environment(config: ExperimentConfig) -> Environment:
         fov_rad=np.deg2rad(config.fov_deg),
         tom1=config.tom1,
         tom_order=None if assigned_orders is not None else config.tom_order,
+        rng=wander_rng,
     )
     for ext in side_exits:
         environment.add_exit(ext)

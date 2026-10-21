@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import random
 import statistics
 import sys
 from dataclasses import dataclass
@@ -25,8 +24,7 @@ class Result:
 
 def run(config: ExperimentConfig, seed: int, dt: float, max_time: float,
         all_tom0: bool) -> Result:
-    random.seed(seed)
-    environment = build_environment(config)
+    environment = build_environment(config, seed=seed)
     if all_tom0:
         # Keep the same random spawn, headings, and type labels for measurement.
         environment.tom_order = 0

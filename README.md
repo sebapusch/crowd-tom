@@ -19,10 +19,11 @@ Needs Python **≥ 3.12** (see `.python-version`). Use `uv run` so you get that 
 
 ```bash
 uv run python main.py
-uv run python main.py experiments/pillar.yaml
+uv run python main.py experiments/pillar.yaml --seed 42
+uv run python main.py experiments/pillar.yaml --seed-range 1000 1004 --max-time 120
 ```
 
-A pygame window opens: the room on the left, live plots on the right. Close the window to quit.
+A single seed opens a pygame window: the room on the left, live plots on the right. The default seed is **1000** for testing. `--seed-range START END` runs every seed in that inclusive range sequentially without a window, stopping each run when everyone exits or at `--max-time` (default 120 seconds). Use `--dt` to change the range run's physics step (default 1/60 second). Initial IDs, positions, and headings are saved under `experiments/results/initial-states/` and reused for the same seed and spawn geometry across policies; `--results-dir` changes that location. Spawning, type assignment, and wandering use separate seeded streams.
 
 ### Bundled scenes (`experiments/`)
 
@@ -48,7 +49,7 @@ The mixed advantage scene puts 20 agents of each type in the same spawn area. Th
 
 For departure times, run `uv run python scripts/evaluate_mixed_tom.py --seeds 16`. It repeats seeded mixed runs, then repeats each spawn with every agent behaving as ToM-0 while retaining the original type labels. The labeled all-ToM-0 run estimates how much of the group difference comes from random starting positions. A positive `advantage` means ToM-1 agents left sooner on average. The evaluator counts anyone still inside at its 120-second cutoff as 120 seconds.
 
-At the UI's 1/60-second step, ToM-1 left sooner in 15 of seeds 0–15, averaging about 3.3 seconds earlier. The paired improvement over the labeled all-ToM-0 control was about 1.5 seconds. Results vary by seed, so compare the across-seed summary rather than a single run.
+Results vary by seed, so compare the across-seed summary rather than a single run.
 
 ## Controls
 
@@ -56,7 +57,7 @@ At the UI's 1/60-second step, ToM-1 left sooner in 15 of seeds 0–15, averaging
 | Key               | Action                                                                |
 | ----------------- | --------------------------------------------------------------------- |
 | Space             | Pause                                                                 |
-| R                 | Reset this experiment (new spawn)                                     |
+| R                 | Reset this experiment with the same seed and initial crowd            |
 | + / -             | Simulation speed                                                      |
 | T                 | Cycle reactive / ToM-0 / ToM-1; mixed scenes also cycle back to the mixture |
 | [ / ]             | Previous / next YAML in `experiments/`                                |
@@ -65,7 +66,7 @@ At the UI's 1/60-second step, ToM-1 left sooner in 15 of seeds 0–15, averaging
 | Click a wall edge | In edit mode: add a width-3 door on that side                         |
 | Backspace         | Undo last circle, interior wall, or door                              |
 | F                 | Save current layout to `experiments/last.yaml` (gitignored)           |
-| G                 | Save plot time series to `experiments/last-metrics-<mode>.csv` (gitignored) |
+| G                 | Save plot time series to `experiments/last-metrics-<mode>-seed-<N>.csv` (gitignored) |
 | D                 | Debug: each chosen exit gets a color; arrows show agents' chosen headings |
 
 
