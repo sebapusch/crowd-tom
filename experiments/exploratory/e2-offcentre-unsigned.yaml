@@ -1,0 +1,22 @@
+# E3. Off-centre crowd without signs. Both doors are 3 m wide.
+# Same room and spawn as E2. Exit knowledge comes only from seeing a door.
+name: e3-offcentre-unsigned
+width: 100
+height: 60
+tom_order: 0
+agents:
+  count: 80
+  radius: 0.3
+  desired_speed: 2.0
+  spawn_region:
+    min: [32, 22]
+    max: [42, 34]
+perception:
+  view_range: 40
+  fov_deg: 360
+exits:
+  - {side: north, center: 30, width: 3, name: left}
+  - {side: north, center: 70, width: 3, name: right}
+obstacles:
+  walls: []
+  circles: []
