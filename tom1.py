@@ -10,6 +10,7 @@ from perception import EPSILON, pairwise_visible_mask, unit_rows, visible_exit_m
 from tom0 import ToM0Params, distance_penalty, occupancy_penalty, uncertainty
 
 if TYPE_CHECKING:
+    from environment import ExitSign
     from obstacle import Obstacle
 
 
@@ -91,6 +92,7 @@ class ToM1Reasoner:
 
         # Process farther agents first so a full, equal-age memory retains nearer ones.
         records = self.memories.setdefault(observer_id, {})
+        order = np.argsort(distances[observed])[::-1]
         # Heap keys preserve the dict insertion-order tie break of the old min scan.
         # An updated record leaves a stale heap entry, skipped when evicting.
         latest = {agent_id: max(sightings.values()) for agent_id, sightings in records.items()}
@@ -101,7 +103,7 @@ class ToM1Reasoner:
         ]
         heapify(oldest_first)
         next_order = len(insertion_order)
-        for row in np.argsort(distances[observed])[::-1]:
+        for row in order:
             exits_seen = known[witnessed[row]]
             if len(exits_seen) == 0:
                 continue
@@ -109,8 +111,8 @@ class ToM1Reasoner:
             if observed_id not in records:
                 if len(records) >= self.params.memory_agents:
                     while True:
-                        timestamp, order, oldest = heappop(oldest_first)
-                        if latest.get(oldest) == timestamp and insertion_order.get(oldest) == order:
+                        timestamp, insertion_rank, oldest = heappop(oldest_first)
+                        if latest.get(oldest) == timestamp and insertion_order.get(oldest) == insertion_rank:
                             del records[oldest]
                             del latest[oldest]
                             del insertion_order[oldest]
@@ -128,29 +130,35 @@ class ToM1Reasoner:
 
     def _estimated_occupancy(
         self,
-        observer: int,
-        observed: np.ndarray,
         pos: np.ndarray,
-        targets: np.ndarray,
+        mu: np.ndarray,
+        has_belief: np.ndarray,
+        modeled: np.ndarray,
+        observer_mask: np.ndarray,
         pair_directions: np.ndarray,
         occupancy_eligible: np.ndarray,
         tom0: ToM0Params,
     ) -> np.ndarray:
-        other_indices = np.concatenate(([observer], observed))
-        directions = pair_directions[np.ix_(observed, other_indices)]
-
-        axes = targets[None, :, :] - pos[observed][:, None, :]
-        axes /= np.maximum(np.linalg.norm(axes, axis=2, keepdims=True), EPSILON)
-        in_cone = np.matmul(directions, np.swapaxes(axes, 1, 2)) >= np.cos(
-            0.5 * tom0.occupancy_fov_rad
+        """Density for observer, modeled agent, and exit, in bounded batches."""
+        n, exit_count = has_belief.shape
+        density = np.zeros((n, n, exit_count), dtype=float)
+        observers = np.flatnonzero(
+            observer_mask & (has_belief.sum(axis=1) > 1) & modeled.any(axis=1)
         )
-        eligible = occupancy_eligible[np.ix_(observed, other_indices)]
-        count = np.sum(eligible[:, :, None] & in_cone, axis=1)
-        area = max(
-            0.5 * tom0.occupancy_range**2 * tom0.occupancy_fov_rad,
-            EPSILON,
-        )
-        return count / area
+        area = max(0.5 * tom0.occupancy_range**2 * tom0.occupancy_fov_rad, EPSILON)
+        threshold = np.cos(0.5 * tom0.occupancy_fov_rad)
+        batch_size = max(1, min(32, 2_000_000 // max(n * n, 1)))
+        for start in range(0, len(observers), batch_size):
+            batch = observers[start:start + batch_size]
+            # Each observer models itself plus the neighbors it currently sees.
+            included = modeled[batch] | (batch[:, None] == np.arange(n))
+            eligible = included[:, None, :] & occupancy_eligible[None, :, :]
+            for k in np.flatnonzero(has_belief[batch].any(axis=0)):
+                axes = mu[batch, k, None, :] - pos[None, :, :]
+                axes /= np.maximum(np.linalg.norm(axes, axis=2, keepdims=True), EPSILON)
+                cosine = np.einsum('jld,bjd->bjl', pair_directions, axes)
+                density[batch, :, k] = np.sum(eligible & (cosine >= threshold), axis=2) / area
+        return density
 
     def choose(
         self,
@@ -168,6 +176,7 @@ class ToM1Reasoner:
         tom0: ToM0Params,
         now: float,
         observer_mask: np.ndarray | None = None,
+        signs: list[ExitSign] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return desired headings, chosen exits, and predicted demand by exit."""
         n, exit_count = has_belief.shape
@@ -200,6 +209,23 @@ class ToM1Reasoner:
                     view_range,
                     fov_rad,
                 )
+        for sign in signs or ():
+            k = sign.exit_index
+            candidates = has_belief[observer_index, k]
+            ii = observer_index[candidates]
+            jj = observed_index[candidates]
+            if len(ii):
+                # A neighbor's sign visibility does not depend on which observer sees them.
+                sign_target = np.broadcast_to(np.asarray(sign.position, dtype=float), pos.shape)
+                sign_visible = visible_exit_mask(
+                    pos,
+                    vel,  # Use the same observable heading proxy as for exits.
+                    sign_target,
+                    obstacles,
+                    view_range,
+                    fov_rad,
+                )
+                witnessed[ii, jj, k] |= sign_visible[jj]
         # Actual desired headings are private. Use visible velocity as a heading proxy.
         estimated_visibility = (
             visible_agents
@@ -210,6 +236,10 @@ class ToM1Reasoner:
             estimated_visibility
             & (pair_distance > EPSILON)
             & (pair_distance <= tom0.occupancy_range)
+        )
+        estimated_occupancy = self._estimated_occupancy(
+            pos, mu, has_belief, modeled, observer_mask,
+            pair_directions, occupancy_eligible, tom0,
         )
 
         for i in range(n):
@@ -269,10 +299,7 @@ class ToM1Reasoner:
                     targets[None, :, :] - pos[observed][:, None, :],
                     axis=2,
                 )
-                occupancy = self._estimated_occupancy(
-                    i, observed, pos, targets, pair_directions,
-                    occupancy_eligible, tom0,
-                )
+                occupancy = estimated_occupancy[i][np.ix_(observed, known)]
                 estimated_scores = (
                     tom0.w_distance * distance_penalty(distance, tom0.distance_scale)
                     + tom0.w_occupancy * occupancy_penalty(

@@ -412,6 +412,7 @@ class Environment:
                 tom0=params,
                 now=self._t,
                 observer_mask=orders == 1,
+                signs=self.signs,
             )
             use_tom1 = (orders == 1) & (tom1_chosen >= 0)
             direction[use_tom1] = tom_heading[use_tom1]

@@ -55,6 +55,13 @@ class ExitSignTests(unittest.TestCase):
         self.assertFalse(env._has_belief[0, 0])
         self.assertEqual(env._chosen_exit[0], -1)
 
+    def test_tom1_observer_witnesses_neighbor_seeing_sign(self):
+        env = make_environment(1)
+        env.add_sign(ExitSign((2.0, 0.0), 0))
+        env._desired_directions(env._pos, 1 / 60)
+        self.assertFalse(env._seen_exits[0, 0])
+        self.assertEqual(env.tom1.memories[1][0][0], 0.0)
+
     def test_reactive_agent_uses_sign_only_while_visible(self):
         env = make_environment(-1)
         env.add_sign(ExitSign((2.0, 0.0), 0))

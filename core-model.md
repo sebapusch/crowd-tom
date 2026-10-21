@@ -214,7 +214,7 @@ $$
 
 The visibility flag $P_{ij}$ already includes the same view range, field of view, and obstacle line of sight. The following estimate is made only for $j\in\mathcal A^{(i)}_{\mathrm{obs}}$; a record of someone no longer visible may be retained briefly but does not add to current predicted congestion.
 
-Let $\tau_{ijk}$ be the latest time at which $i$ inferred that $j$ saw exit $k$; it is undefined if this has never happened. Agent $i$ keeps a bounded set of these **witnessed exit sightings**:
+Let $\tau_{ijk}$ be the latest time at which $i$ inferred that $j$ saw exit $k$ or a sign for it; it is undefined if this has never happened. Agent $i$ keeps a bounded set of these **witnessed exit knowledge cues**:
 
 $$
 \mathcal M_i(t)
@@ -235,11 +235,11 @@ $$
 \tag{T2a}
 $$
 
-$\mathcal W^{(i)}_j$ is a set of **witnessed exits**, not $j$'s true known-exit set; $j$ may know exits outside it.
+$\mathcal W^{(i)}_j$ is a set of exits for which $i$ witnessed a direct or sign cue, not $j$'s true known-exit set; $j$ may know exits outside it.
 
-When the $M$-agent limit is reached, $i$ discards all records of the agent whose latest witnessed sighting is oldest. Records older than $T_{\mathrm{mem}}$ also expire. These are **$i$'s observations about $j$**, not copies of $j$'s memory. A witnessed sighting is an estimate: $i$ must see $j$ and infer that the exit is visible from $j$'s position, using the exit information and obstacle geometry known to $i$. If a restricted field of view is used, $i$ must also estimate $j$'s heading; the default panoramic view does not require that heading.
+When the $M$-agent limit is reached, $i$ discards all records of the agent whose latest witnessed cue is oldest. Records older than $T_{\mathrm{mem}}$ also expire. These are **$i$'s observations about $j$**, not copies of $j$'s memory. A witnessed cue is an estimate: $i$ must see $j$ and infer that the exit or a sign for it is visible from $j$'s position, using exit and sign geometry plus obstacle geometry. If a restricted field of view is used, $i$ estimates $j$'s heading from its visible velocity; the default panoramic view does not require that heading.
 
-Not witnessing a sighting is not evidence that $j$ does not know the exit: $j$ may have seen it before meeting $i$ or while outside $i$'s view.
+Not witnessing a cue is not evidence that $j$ does not know the exit: $j$ may have seen the exit or its sign before meeting $i$ or while outside $i$'s view.
 
 #### Estimated knowledge and memory uncertainty
 
