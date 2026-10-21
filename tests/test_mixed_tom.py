@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import csv
+import io
 from pathlib import Path
 
 import numpy as np
@@ -43,7 +45,10 @@ class MixedToMTests(unittest.TestCase):
         history.record(stats)
         self.assertEqual(history.remaining_tom0, [7.0])
         self.assertEqual(history.remaining_tom1, [4.0])
-        self.assertIn('remaining_tom0,remaining_tom1', history.to_csv())
+        rows = list(csv.DictReader(io.StringIO(history.to_csv())))
+        self.assertEqual({row['agent_type'] for row in rows}, {'reactive', 'tom0', 'tom1'})
+        self.assertEqual(int(next(row['remaining'] for row in rows if row['agent_type'] == 'tom0')), 7)
+        self.assertEqual(int(next(row['remaining'] for row in rows if row['agent_type'] == 'tom1')), 4)
 
     def test_mixed_dispatch_only_models_tom1_observer(self):
         def make_env(order):
@@ -75,6 +80,41 @@ class MixedToMTests(unittest.TestCase):
         self.assertEqual(int(mixed._chosen_exit[1]), int(baseline._chosen_exit[1]))
         self.assertEqual(mixed.tom0_metrics()['tom1_changed'], 1)
         self.assertNotIn(1, mixed.tom1.memories)
+
+    def test_departures_and_csv_metrics_keep_agent_types(self):
+        agents = [
+            Agent(
+                idx=i, mass=1.0, radius=0.3,
+                social_repulsion=(2000.0, 0.08),
+                position=np.array([4.8 if i == 0 else 0.0, 0.0]),
+                velocity=np.zeros(2), desired_speed=2.0,
+                desired_direction=np.array([1.0, 0.0]), tau=1.0,
+                tom_order=i,
+            )
+            for i in range(2)
+        ]
+        env = Environment(20, 20, agents, tom_order=None)
+        env.add_exit(Exit((5.0, -1.0), (5.0, 1.0)))
+        history = History()
+        history.record(env.tom0_metrics())
+        env.tick(0.5)
+        stats = env.tom0_metrics()
+        history.record(stats)
+
+        self.assertEqual(stats['by_type']['tom0']['escaped'], 1)
+        self.assertEqual(stats['by_type']['tom1']['escaped'], 0)
+        self.assertEqual(stats['by_type']['tom0']['escaped_by_exit'], [1])
+        self.assertEqual(stats['by_type']['tom1']['remaining'], 1)
+        for key in ('remaining', 'escaped', 'seeing_exit', 'seeing_sign',
+                    'with_belief', 'memory_guided', 'no_belief',
+                    'tom1_changed', 'blind_committed'):
+            expected = stats['n'] if key == 'remaining' else stats[key]
+            self.assertEqual(sum(values[key] for values in stats['by_type'].values()), expected)
+        rows = list(csv.DictReader(io.StringIO(history.to_csv())))
+        self.assertEqual(len(rows), 6)
+        tom0_last = next(row for row in rows if row['agent_type'] == 'tom0' and float(row['t']) == 0.5)
+        self.assertEqual(int(tom0_last['escaped']), 1)
+        self.assertEqual(int(tom0_last['remaining']), 0)
 
 
 if __name__ == '__main__':

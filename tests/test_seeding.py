@@ -112,6 +112,11 @@ class SeedingTests(unittest.TestCase):
             self.assertEqual([item['seed'] for item in summaries], [4, 5])
             self.assertEqual(summaries, repeated)
             self.assertEqual(len(list((results / 'initial-states').rglob('*.npz'))), 2)
+            self.assertEqual(
+                sorted(path.name for path in (results / 'seed-test').glob('metrics-*.csv')),
+                ['metrics-4.csv', 'metrics-5.csv'],
+            )
+            self.assertIn('agent_type', (results / 'seed-test' / 'metrics-4.csv').read_text().splitlines()[0])
 
 
 if __name__ == '__main__':

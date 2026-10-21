@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import csv
+import io
 
 import pygame
 from pygame.surface import SurfaceType
+from environment import AGENT_TYPES
 
 PLOT_WIDTH = 360
 SIM_SIZE = 1000
@@ -25,6 +28,7 @@ PLOT_COLORS = {
 
 @dataclass
 class History:
+    type_rows: list[dict] = field(default_factory=list)
     t: list[float] = field(default_factory=list)
     remaining: list[float] = field(default_factory=list)
     escaped: list[float] = field(default_factory=list)
@@ -53,8 +57,12 @@ class History:
         self.with_belief.append(float(stats['with_belief']))
         self.memory_guided.append(float(stats['memory_guided']))
         self.no_belief.append(float(stats['no_belief']))
+        for agent_type in AGENT_TYPES:
+            self.type_rows.append({'t': float(stats['t']), 'agent_type': agent_type,
+                                   **stats['by_type'][agent_type]})
 
     def clear(self) -> None:
+        self.type_rows.clear()
         self.t.clear()
         self.remaining.clear()
         self.escaped.clear()
@@ -68,14 +76,19 @@ class History:
         self.no_belief.clear()
 
     def to_csv(self) -> str:
-        lines = ['t,remaining,remaining_tom0,remaining_tom1,remaining_reactive,escaped,seeing_exit,seeing_sign,with_belief,memory_guided,no_belief']
-        for row in zip(
-                self.t, self.remaining, self.remaining_tom0, self.remaining_tom1,
-                self.remaining_reactive, self.escaped, self.seeing_exit, self.seeing_sign,
-                self.with_belief, self.memory_guided, self.no_belief,
-        ):
-            lines.append(','.join(f'{value:.4f}' for value in row))
-        return '\n'.join(lines) + '\n'
+        columns = (
+            't', 'agent_type', 'initial', 'remaining', 'escaped', 'seeing_exit',
+            'seeing_sign', 'with_belief', 'memory_guided', 'no_belief',
+            'tom1_changed', 'blind_committed', 'mean_uncertainty', 'mean_age',
+            'max_commit_distance', 'peak_memory_guided', 'peak_commit_distance',
+            'blind_committed_s', 'evacuation_time', 'escaped_by_exit',
+        )
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        for row in self.type_rows:
+            writer.writerow(row)
+        return output.getvalue()
 
     def auc(self) -> dict[str, float]:
         """AUC of the remaining agents over time, for each type."""

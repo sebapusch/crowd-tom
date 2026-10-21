@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import statistics
 from pathlib import Path
 
@@ -40,17 +41,16 @@ DEFAULT_EXPERIMENT = EXPERIMENT_DIR / 'two-north-one-south.yaml'
 DEFAULT_RESULTS_DIR = EXPERIMENT_DIR / 'results'
 
 
-def _metrics_path(tom_order: int | None, seed: int | None = None) -> Path:
-    if tom_order is None:
-        mode = 'mixed'
-    elif tom_order < 0:
-        mode = 'reactive'
-    elif tom_order == 1:
-        mode = 'tom-1'
-    else:
-        mode = 'tom-0'
-    suffix = f'-seed-{seed}' if seed is not None else ''
-    return EXPERIMENT_DIR / f'last-metrics-{mode}{suffix}.csv'
+def _metrics_path(config: ExperimentConfig, seed: int, results_dir: Path = DEFAULT_RESULTS_DIR) -> Path:
+    name = re.sub(r'[^A-Za-z0-9_-]+', '-', config.name.strip()).strip('-') or 'untitled'
+    return results_dir / name / f'metrics-{seed}.csv'
+
+
+def _save_metrics(history: History, config: ExperimentConfig, seed: int, results_dir: Path) -> Path:
+    path = _metrics_path(config, seed, results_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(history.to_csv())
+    return path
 
 
 COLORS = {
@@ -357,8 +357,7 @@ def run_simulation(
                     path = save_experiment(config, EXPERIMENT_DIR / 'last.yaml')
                     print(f'saved experiment {path}')
                 elif event.key == pygame.K_g:
-                    path = _metrics_path(None if config.tom_proportions else config.tom_order, seed)
-                    path.write_text(history.to_csv())
+                    path = _save_metrics(history, config, seed, results_dir)
                     print(f'saved metrics {path}')
                 elif event.key == pygame.K_BACKSPACE and edit_mode:
                     if config.circles:
@@ -447,8 +446,7 @@ def run_simulation(
             plot_path = plots_dir / f'{experiment_name}_seed_{seed}_auc_plot.png'
             save_auc_plot(history, str(plot_path))
             print(f"Saved AUC plot to {plot_path}")
-            csv_path = _metrics_path(None if config.tom_proportions else config.tom_order, seed)
-            csv_path.write_text(history.to_csv())
+            csv_path = _save_metrics(history, config, seed, results_dir)
             reported_done = True
 
         draw(
@@ -457,6 +455,8 @@ def run_simulation(
         )
         pygame.display.flip()
 
+    if not reported_done:
+        _save_metrics(history, config, seed, results_dir)
     pygame.quit()
 
 
@@ -470,9 +470,17 @@ def run_seed_range(
         environment = build_environment(
             config, seed=seed, initial_state_dir=results_dir / 'initial-states',
         )
+        history = History()
+        history.record(environment.tom0_metrics())
+        next_record = 0.5
         while environment.agents and environment._t < max_time:
             environment.tick(min(dt, max_time - environment._t))
+            if environment._t + 1e-9 >= next_record:
+                history.record(environment.tom0_metrics())
+                next_record += 0.5
         stats = environment.tom0_metrics()
+        history.record(stats)
+        _save_metrics(history, config, seed, results_dir)
         summaries.append({'seed': seed, 'escaped': stats['escaped'],
                           'remaining': stats['n'], 'time': stats['t']})
         print(
@@ -500,7 +508,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--dt', type=float, default=1 / 60,
                         help='physics timestep for --seed-range (default: 1/60)')
     parser.add_argument('--results-dir', type=Path, default=DEFAULT_RESULTS_DIR,
-                        help='directory for saved initial crowds')
+                        help='directory for metrics and saved initial crowds')
     args = parser.parse_args(argv)
     if args.seed is not None and args.seed < 0:
         parser.error('--seed must be nonnegative')

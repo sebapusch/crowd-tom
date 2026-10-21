@@ -200,8 +200,8 @@ class ToM1Tests(unittest.TestCase):
         self.assertEqual(loaded.tom_order, 1)
         self.assertEqual(loaded.tom1, config.tom1)
         self.assertEqual(tom_order_label(1), "ToM-1")
-        self.assertEqual(_metrics_path(1).name, "last-metrics-tom-1.csv")
-        self.assertEqual(_metrics_path(0).name, "last-metrics-tom-0.csv")
+        self.assertEqual(_metrics_path(config, 7),
+                         Path(__file__).resolve().parents[1] / 'experiments' / 'results' / 'untitled' / 'metrics-7.csv')
 
     def test_yaml_view_range_controls_behavioral_radii(self):
         with tempfile.TemporaryDirectory() as directory:
