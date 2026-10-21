@@ -10,6 +10,7 @@ from exit import Exit
 from experiment import ExperimentConfig, load_experiment, save_experiment
 from layout import SideExit
 from obstacle import Wall
+from plots import History
 
 
 def make_environment(tom_order=0):
@@ -64,6 +65,39 @@ class ExitSignTests(unittest.TestCase):
         env.signs.clear()
         env._desired_directions(env._pos, 1 / 60)
         self.assertEqual(env._chosen_exit[0], -1)
+
+    def test_choice_metrics_distinguish_exit_sign_and_memory(self):
+        env = make_environment()
+        env.add_sign(ExitSign((2.0, 0.0), 0))
+        env._desired_directions(env._pos, 1 / 60)
+        stats = env.tom0_metrics()
+        self.assertEqual(stats['seeing_exit'], 1)
+        self.assertEqual(stats['seeing_sign'], 1)
+        self.assertEqual(stats['memory_guided'], 0)
+        self.assertEqual(stats['blind_committed'], 0)
+
+        history = History()
+        history.record(stats)
+        self.assertIn('seeing_exit,seeing_sign', history.to_csv())
+        self.assertEqual(history.seeing_exit, [1.0])
+        self.assertEqual(history.seeing_sign, [1.0])
+
+        env.signs.clear()
+        env._desired_directions(env._pos, 1 / 60)
+        stats = env.tom0_metrics()
+        self.assertEqual(stats['seeing_exit'], 1)
+        self.assertEqual(stats['seeing_sign'], 0)
+        self.assertEqual(stats['memory_guided'], 1)
+        self.assertEqual(stats['blind_committed'], 1)
+
+    def test_direct_exit_sight_takes_precedence_over_sign(self):
+        env = make_environment(-1)
+        env.add_sign(ExitSign((9.0, 14.0), 0))
+        env._desired_directions(env._pos, 1 / 60)
+        stats = env.tom0_metrics()
+        self.assertEqual(stats['seeing_exit'], 1)
+        self.assertEqual(stats['seeing_sign'], 0)
+        self.assertEqual(stats['memory_guided'], 0)
 
     def test_signs_round_trip_and_validate_exit_reference(self):
         config = ExperimentConfig(

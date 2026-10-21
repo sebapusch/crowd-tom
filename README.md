@@ -137,7 +137,7 @@ obstacles:
 - Seeing a door vs holding a belief vs never seen
 - **ToM-0 unseen choice:** heading to a remembered door that is out of sight (should stay 0 in reactive mode)
 - **ToM-1 changed exit:** agents whose current ToM-1 choice differs from their ToM-0 choice
-- Right panel: remaining agents by type and ToM-state series over time. In a mixed scene, the type counts follow the agents' assigned types even when **T** temporarily overrides their behavior.
+- Right panel: remaining agents by type and selected-exit cue (direct sight, visible sign, or memory) over time. In a mixed scene, the type counts follow the agents' assigned types even when **T** temporarily overrides their behavior.
 
 
 

@@ -15,10 +15,9 @@ PLOT_COLORS = {
     'ToM-0': (40, 90, 200),
     'ToM-1': (190, 55, 150),
     'reactive': (190, 110, 20),
-    'seeing': (0, 160, 90),
-    'belief': (40, 90, 200),
+    'seeing exit': (0, 160, 90),
+    'seeing sign': (0, 130, 160),
     'memory': (220, 110, 0),
-    'none': (140, 140, 140),
     'grid': (210, 210, 210),
     'panel': (245, 245, 245),
 }
@@ -32,7 +31,8 @@ class History:
     remaining_tom0: list[float] = field(default_factory=list)
     remaining_tom1: list[float] = field(default_factory=list)
     remaining_reactive: list[float] = field(default_factory=list)
-    seeing: list[float] = field(default_factory=list)
+    seeing_exit: list[float] = field(default_factory=list)
+    seeing_sign: list[float] = field(default_factory=list)
     with_belief: list[float] = field(default_factory=list)
     memory_guided: list[float] = field(default_factory=list)
     no_belief: list[float] = field(default_factory=list)
@@ -48,7 +48,8 @@ class History:
         self.remaining_tom0.append(float(stats['remaining_tom0']))
         self.remaining_tom1.append(float(stats['remaining_tom1']))
         self.remaining_reactive.append(float(stats['remaining_reactive']))
-        self.seeing.append(float(stats['seeing']))
+        self.seeing_exit.append(float(stats['seeing_exit']))
+        self.seeing_sign.append(float(stats['seeing_sign']))
         self.with_belief.append(float(stats['with_belief']))
         self.memory_guided.append(float(stats['memory_guided']))
         self.no_belief.append(float(stats['no_belief']))
@@ -60,16 +61,17 @@ class History:
         self.remaining_tom0.clear()
         self.remaining_tom1.clear()
         self.remaining_reactive.clear()
-        self.seeing.clear()
+        self.seeing_exit.clear()
+        self.seeing_sign.clear()
         self.with_belief.clear()
         self.memory_guided.clear()
         self.no_belief.clear()
 
     def to_csv(self) -> str:
-        lines = ['t,remaining,remaining_tom0,remaining_tom1,remaining_reactive,escaped,seeing,with_belief,memory_guided,no_belief']
+        lines = ['t,remaining,remaining_tom0,remaining_tom1,remaining_reactive,escaped,seeing_exit,seeing_sign,with_belief,memory_guided,no_belief']
         for row in zip(
                 self.t, self.remaining, self.remaining_tom0, self.remaining_tom1,
-                self.remaining_reactive, self.escaped, self.seeing,
+                self.remaining_reactive, self.escaped, self.seeing_exit, self.seeing_sign,
                 self.with_belief, self.memory_guided, self.no_belief,
         ):
             lines.append(','.join(f'{value:.4f}' for value in row))
@@ -172,12 +174,11 @@ def draw_plots(
     _chart(
         screen, bottom,
         {
-            'seeing': history.seeing,
-            'belief': history.with_belief,
+            'seeing exit': history.seeing_exit,
+            'seeing sign': history.seeing_sign,
             'memory': history.memory_guided,
-            'none': history.no_belief,
         },
-        tmax, max(initial, 1), font, 'ToM state',
+        tmax, max(initial, 1), font, 'selected-exit cue',
     )
 
     help_lines = [

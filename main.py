@@ -123,8 +123,9 @@ def _draw_hud(
         f"x{time_scale:.2f}   remaining {stats['n']}/{stats['initial']}",
         f"ToM-0 {stats['remaining_tom0']}   ToM-1 {stats['remaining_tom1']}   reactive {stats['remaining_reactive']}",
         f"escaped {stats['escaped']}   ({exits})",
-        f"seeing: {stats['seeing']}   know: {stats['with_belief']}   never seen: {stats['no_belief']}",
-        f"ToM-0 unseen choice: {stats['memory_guided']}  peak {stats['peak_memory_guided']}",
+        f"seeing exit: {stats['seeing_exit']}   seeing sign: {stats['seeing_sign']}",
+        f"know: {stats['with_belief']}   no belief: {stats['no_belief']}",
+        f"memory-guided choice: {stats['memory_guided']}  peak {stats['peak_memory_guided']}",
         f"ToM-1 changed exit: {stats['tom1_changed']}",
         f"blind committed: {stats['blind_committed']}   {stats['blind_committed_s']:.1f} person-s",
     ]
