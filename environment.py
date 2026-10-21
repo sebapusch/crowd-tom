@@ -21,6 +21,7 @@ F_CUT = 1
 COMPRESSION_COEFF = 1.2e5
 SLIDING_COEFF = 2.4e5
 MIN_DIST = 1e-12
+DEFAULT_TEST_SEED = 1000
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class Environment:
             tom0: ToM0Params | None = None,
             tom1: ToM1Params | None = None,
             tom_order: int | None = 0,
+            rng: np.random.Generator | None = None,
     ) -> None:
         if not np.isfinite(view_range) or view_range <= 0:
             raise ValueError('view_range must be positive and finite')
@@ -62,7 +64,7 @@ class Environment:
         self.tom1 = ToM1Reasoner(replace(tom1 or ToM1Params(), model_range=view_range))
         self.tom_order = tom_order
         self.has_assigned_tom_orders = any(agent.tom_order is not None for agent in agents)
-        self._rng = np.random.default_rng()
+        self._rng = rng if rng is not None else np.random.default_rng(DEFAULT_TEST_SEED)
         self._t = 0.0
         self._grid = {}
         self._cell_size = self._compute_visibility()

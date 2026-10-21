@@ -577,7 +577,7 @@ Under the paper's unit convention, lengths are meters, time is seconds, mass is 
 
 The startup file is `two-north-one-south.yaml`, with exits $[(20,0),(23,0)]$, $[(77,0),(80,0)]$, and $[(50,100),(53,100)]$. Perimeter walls are generated around exit gaps; YAML can also specify interior walls and circles. YAML exposes scene geometry, agent count/radius/desired speed, homogeneous or mixed ToM mode, and perception settings. `perception.view_range` sets exit and agent visibility, the ToM0 cone radius $R_o$, and the ToM1 modeling radius $R_{\mathrm T}$. A legacy `tom1.model_range` entry is ignored when loading and omitted when saving. Other fields in the `tom1` block override ToM1 parameters; the remaining parameters use code defaults, with programmatic overrides available for environment settings and ToM0 parameters.
 
-Initial velocities are zero. Initial headings have uniformly sampled angles in $[0,2\pi)$. Positions are sampled by sequential rejection in the room with margin $r_i+0.05+1$, pair separation at least $2r_i+0.05$, and obstacle clearance at least $r_i+0.05$. All exit memories start empty.
+Initial velocities are zero. Initial headings have uniformly sampled angles in $[0,2\pi)$. Positions are sampled by sequential rejection in the room with margin $r_i+0.05+1$, pair separation at least $2r_i+0.05$, and obstacle clearance at least $r_i+0.05$. A run seed initializes separate NumPy streams for positions/headings, type assignment, and wandering. The default testing seed is 1000. Main saves initial IDs, positions, and headings by seed and spawn geometry so policies can reuse the same crowd. All exit memories start empty.
 
 ### ToM1 implementation choices
 

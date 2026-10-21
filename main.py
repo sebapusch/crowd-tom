@@ -1,7 +1,6 @@
 import argparse
 import os
 import statistics
-import numpy as np
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "1")
@@ -14,6 +13,7 @@ from pygame.surface import SurfaceType
 from environment import Environment
 from experiment import (
     ExperimentConfig,
+    DEFAULT_TEST_SEED,
     build_environment,
     list_experiments,
     load_experiment,
@@ -37,9 +37,10 @@ CHOICE_COLORS = (
 )
 EXPERIMENT_DIR = Path(__file__).parent / 'experiments'
 DEFAULT_EXPERIMENT = EXPERIMENT_DIR / 'two-north-one-south.yaml'
+DEFAULT_RESULTS_DIR = EXPERIMENT_DIR / 'results'
 
 
-def _metrics_path(tom_order: int | None) -> Path:
+def _metrics_path(tom_order: int | None, seed: int | None = None) -> Path:
     if tom_order is None:
         mode = 'mixed'
     elif tom_order < 0:
@@ -48,7 +49,8 @@ def _metrics_path(tom_order: int | None) -> Path:
         mode = 'tom-1'
     else:
         mode = 'tom-0'
-    return EXPERIMENT_DIR / f'last-metrics-{mode}.csv'
+    suffix = f'-seed-{seed}' if seed is not None else ''
+    return EXPERIMENT_DIR / f'last-metrics-{mode}{suffix}.csv'
 
 
 COLORS = {
@@ -253,13 +255,17 @@ def _world_from_mouse(pos: tuple[int, int], scale: float) -> tuple[float, float]
     return x / scale, y / scale
 
 
-def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> None:
-    environment = build_environment(config)
+def run_simulation(
+        config: ExperimentConfig, catalog: list[Path], fps: int,
+        seed: int = DEFAULT_TEST_SEED,
+        results_dir: Path = DEFAULT_RESULTS_DIR,
+) -> None:
+    environment = build_environment(config, seed=seed, initial_state_dir=results_dir / 'initial-states')
     scale = SIM_SIZE / environment.width
 
     pygame.init()
     pygame.font.init()
-    pygame.display.set_caption('crowd-tom')
+    pygame.display.set_caption(f'crowd-tom | seed {seed}')
     font = pygame.font.SysFont(None, 18)
     screen = pygame.display.set_mode(WINDOW_SIZE, pygame.DOUBLEBUF, vsync=0)
     clock = pygame.time.Clock()
@@ -287,7 +293,7 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
     def reset() -> None:
         nonlocal environment, reported_done, accumulator, sprites
         nonlocal congestion_totals, congestion_peaks, congestion_samples
-        environment = build_environment(config)
+        environment = build_environment(config, seed=seed, initial_state_dir=results_dir / 'initial-states')
         congestion_totals = [0] * len(environment.exits)
         congestion_peaks = [0] * len(environment.exits)
         congestion_samples = 0
@@ -351,7 +357,7 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
                     path = save_experiment(config, EXPERIMENT_DIR / 'last.yaml')
                     print(f'saved experiment {path}')
                 elif event.key == pygame.K_g:
-                    path = _metrics_path(None if config.tom_proportions else config.tom_order)
+                    path = _metrics_path(None if config.tom_proportions else config.tom_order, seed)
                     path.write_text(history.to_csv())
                     print(f'saved metrics {path}')
                 elif event.key == pygame.K_BACKSPACE and edit_mode:
@@ -438,10 +444,10 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
             plots_dir = Path(__file__).resolve().parent / 'plots'
             plots_dir.mkdir(exist_ok=True)
             experiment_name = config.name.strip().lower().replace('-', '_')
-            plot_path = plots_dir / f'{experiment_name}_auc_plot.png'
+            plot_path = plots_dir / f'{experiment_name}_seed_{seed}_auc_plot.png'
             save_auc_plot(history, str(plot_path))
             print(f"Saved AUC plot to {plot_path}")
-            csv_path = _metrics_path(None if config.tom_proportions else config.tom_order)
+            csv_path = _metrics_path(None if config.tom_proportions else config.tom_order, seed)
             csv_path.write_text(history.to_csv())
             reported_done = True
 
@@ -454,7 +460,30 @@ def run_simulation(config: ExperimentConfig, catalog: list[Path], fps: int) -> N
     pygame.quit()
 
 
-def main() -> None:
+def run_seed_range(
+        config: ExperimentConfig, start: int, end: int,
+        dt: float, max_time: float, results_dir: Path,
+) -> list[dict]:
+    """Run an inclusive seed range headlessly, one completed run at a time."""
+    summaries = []
+    for seed in range(start, end + 1):
+        environment = build_environment(
+            config, seed=seed, initial_state_dir=results_dir / 'initial-states',
+        )
+        while environment.agents and environment._t < max_time:
+            environment.tick(min(dt, max_time - environment._t))
+        stats = environment.tom0_metrics()
+        summaries.append({'seed': seed, 'escaped': stats['escaped'],
+                          'remaining': stats['n'], 'time': stats['t']})
+        print(
+            f"seed {seed}: escaped {stats['escaped']}/{stats['initial']}, "
+            f"remaining {stats['n']}, simulated {stats['t']:.3f}s",
+            flush=True,
+        )
+    return summaries
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description='Crowd ToM simulator')
     parser.add_argument(
         'experiment',
@@ -462,10 +491,35 @@ def main() -> None:
         default=str(DEFAULT_EXPERIMENT),
         help='YAML experiment file',
     )
-    args = parser.parse_args()
+    seeds = parser.add_mutually_exclusive_group()
+    seeds.add_argument('--seed', type=int, help=f'single run seed (default: {DEFAULT_TEST_SEED})')
+    seeds.add_argument('--seed-range', nargs=2, type=int, metavar=('START', 'END'),
+                       help='run every seed from START through END, inclusive, headlessly')
+    parser.add_argument('--max-time', type=float, default=120.0,
+                        help='simulation cutoff in seconds for --seed-range (default: 120)')
+    parser.add_argument('--dt', type=float, default=1 / 60,
+                        help='physics timestep for --seed-range (default: 1/60)')
+    parser.add_argument('--results-dir', type=Path, default=DEFAULT_RESULTS_DIR,
+                        help='directory for saved initial crowds')
+    args = parser.parse_args(argv)
+    if args.seed is not None and args.seed < 0:
+        parser.error('--seed must be nonnegative')
+    if args.seed_range is not None:
+        start, end = args.seed_range
+        if start < 0 or end < start:
+            parser.error('--seed-range requires 0 <= START <= END')
+    if not np.isfinite(args.max_time) or args.max_time <= 0:
+        parser.error('--max-time must be positive and finite')
+    if not np.isfinite(args.dt) or args.dt <= 0:
+        parser.error('--dt must be positive and finite')
     catalog = list_experiments(EXPERIMENT_DIR)
     config = load_experiment(args.experiment)
-    run_simulation(config, catalog, fps=60)
+    if args.seed_range is not None:
+        run_seed_range(config, start, end, args.dt, args.max_time, args.results_dir)
+    else:
+        run_simulation(config, catalog, fps=60,
+                       seed=args.seed if args.seed is not None else DEFAULT_TEST_SEED,
+                       results_dir=args.results_dir)
 
 
 if __name__ == '__main__':
