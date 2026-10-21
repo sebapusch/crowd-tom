@@ -76,20 +76,35 @@ class History:
         self.no_belief.clear()
 
     def to_csv(self, metadata: dict | None = None) -> str:
+        exit_count = max((len(row['selected_exits']) for row in self.type_rows), default=0)
         columns = (
             'seed', 'tom_config', 'tom_order', 'tom0_proportion', 'tom1_proportion',
             'dt', 'max_time',
             't', 'agent_type', 'initial', 'remaining', 'escaped', 'seeing_exit',
             'seeing_sign', 'with_belief', 'memory_guided', 'no_belief',
-            'tom1_changed', 'blind_committed', 'mean_uncertainty', 'mean_age',
+            'following', 'wandering', 'tom1_changed',
+            'switches_step', 'switches_total', 'agent_seconds', 'switch_rate',
+            'blind_committed', 'mean_uncertainty', 'mean_age',
             'max_commit_distance', 'peak_memory_guided', 'peak_commit_distance',
             'blind_committed_s', 'evacuation_time', 'escaped_by_exit',
+        ) + tuple(f'selected_exit_{index}' for index in range(exit_count)) + tuple(
+            f'escaped_exit_{index}' for index in range(exit_count)
+        ) + tuple(
+            f'departed_exit_{index}' for index in range(exit_count)
         )
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=columns)
         writer.writeheader()
         for row in self.type_rows:
-            writer.writerow({**(metadata or {}), **row})
+            values = {**(metadata or {}), **row}
+            selected = values.pop('selected_exits')
+            departed = values.pop('departed_exits_step')
+            values.update({f'selected_exit_{index}': count for index, count in enumerate(selected)})
+            values.update({f'escaped_exit_{index}': count
+                           for index, count in enumerate(row['escaped_by_exit'])})
+            values.update({f'departed_exit_{index}': count
+                           for index, count in enumerate(departed)})
+            writer.writerow(values)
         return output.getvalue()
 
     def auc(self) -> dict[str, float]:

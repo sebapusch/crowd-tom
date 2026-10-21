@@ -104,6 +104,7 @@ class MixedToMTests(unittest.TestCase):
         self.assertEqual(stats['by_type']['tom0']['escaped'], 1)
         self.assertEqual(stats['by_type']['tom1']['escaped'], 0)
         self.assertEqual(stats['by_type']['tom0']['escaped_by_exit'], [1])
+        self.assertEqual(stats['by_type']['tom0']['departed_exits_step'], [1])
         self.assertEqual(stats['by_type']['tom1']['remaining'], 1)
         for key in ('remaining', 'escaped', 'seeing_exit', 'seeing_sign',
                     'with_belief', 'memory_guided', 'no_belief',
@@ -115,6 +116,20 @@ class MixedToMTests(unittest.TestCase):
         tom0_last = next(row for row in rows if row['agent_type'] == 'tom0' and float(row['t']) == 0.5)
         self.assertEqual(int(tom0_last['escaped']), 1)
         self.assertEqual(int(tom0_last['remaining']), 0)
+        self.assertEqual(int(tom0_last['escaped_exit_0']), 1)
+        self.assertEqual(int(tom0_last['departed_exit_0']), 1)
+
+    def test_metrics_keep_assigned_type_when_behavior_is_overridden(self):
+        config = ExperimentConfig(
+            width=20, height=20, agent_count=2,
+            tom_proportions=ToMProportions(0.5, 0.5),
+        )
+        env = build_environment(config)
+        env.tom_order = 0
+        env.tick(0.1)
+        stats = env.tom0_metrics()['by_type']
+        self.assertAlmostEqual(stats['tom0']['agent_seconds'], 0.1)
+        self.assertAlmostEqual(stats['tom1']['agent_seconds'], 0.1)
 
 
 if __name__ == '__main__':

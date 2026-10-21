@@ -441,7 +441,7 @@ def run_simulation(
                     congestion_totals[i] += count
                     congestion_peaks[i] = max(congestion_peaks[i], count)
                 congestion_samples += 1
-                history.record(environment.tom0_metrics())
+                history.record(environment._last_metrics)
                 accumulator -= dt
                 steps += 1
             if accumulator > dt:
@@ -521,12 +521,9 @@ def run_seed_range(
                 )
                 history = History()
                 history.record(environment.tom0_metrics())
-                next_record = 0.5
                 while environment.agents and environment._t < max_time:
                     environment.tick(min(dt, max_time - environment._t))
-                    if environment._t + 1e-9 >= next_record:
-                        history.record(environment.tom0_metrics())
-                        next_record += 0.5
+                    history.record(environment._last_metrics)
                     now = monotonic()
                     if (environment.agents and environment._t < max_time
                             and (environment._t >= next_sim_report or now - last_report_at >= 10)):
