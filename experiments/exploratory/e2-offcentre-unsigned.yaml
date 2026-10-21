@@ -20,3 +20,8 @@ exits:
 obstacles:
   walls: []
   circles: []
+tom_options:
+  - tom_order: 'reactive'                    
+  - tom_order: 0                         
+  - tom_order: 1                         
+  - tom_proportions: {tom0: 0.5, tom1: 0.5}
