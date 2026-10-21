@@ -1,4 +1,5 @@
 import contextlib
+import csv
 import io
 import tempfile
 import unittest
@@ -112,6 +113,39 @@ class SeedingTests(unittest.TestCase):
             self.assertEqual([item['seed'] for item in summaries], [4, 5])
             self.assertEqual(summaries, repeated)
             self.assertEqual(len(list((results / 'initial-states').rglob('*.npz'))), 2)
+            self.assertEqual(
+                sorted(path.name for path in (results / 'seed-test').glob('metrics-*.csv')),
+                ['metrics-4.csv', 'metrics-5.csv'],
+            )
+            self.assertIn('agent_type', (results / 'seed-test' / 'metrics-4.csv').read_text().splitlines()[0])
+
+    def test_headless_progress_reports_start_intermediate_and_finish(self):
+        config = ExperimentConfig(name='progress-test', width=20, height=20, agent_count=2)
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                run_seed_range(config, 3, 3, 0.1, 1.0, Path(directory))
+            log = output.getvalue()
+            self.assertIn('run 1/1, seed 3, tom-0: starting', log)
+            self.assertIn('remaining,', log)
+            self.assertIn('run 1/1, seed 3, tom-0: finished;', log)
+            self.assertIn('metrics-3.csv', log)
+
+    def test_headless_metrics_record_every_physics_step(self):
+        config = ExperimentConfig(
+            name='step-metrics', width=20, height=20, agent_count=2,
+            exits=[SideExit('east', 10.0, 2.0)],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_seed_range(config, 3, 3, 0.1, 0.3, Path(directory))
+            with (Path(directory) / 'step-metrics' / 'metrics-3.csv').open(newline='') as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(sorted({round(float(row['t']), 6) for row in rows}),
+                             [0.0, 0.1, 0.2, 0.3])
+            self.assertIn('selected_exit_0', rows[0])
+            self.assertIn('escaped_exit_0', rows[0])
+            self.assertIn('departed_exit_0', rows[0])
 
 
 if __name__ == '__main__':

@@ -53,6 +53,67 @@ class ToMProportions:
 
 
 @dataclass(frozen=True)
+class ToMOption:
+    tom_order: int | None = None
+    tom_proportions: ToMProportions | None = None
+
+    def __post_init__(self) -> None:
+        if (self.tom_order is None) == (self.tom_proportions is None):
+            raise ValueError('Each tom_options entry needs exactly one of tom_order or tom_proportions')
+
+    @property
+    def label(self) -> str:
+        if self.tom_proportions is not None:
+            tom0 = str(self.tom_proportions.tom0).replace('.', 'p')
+            tom1 = str(self.tom_proportions.tom1).replace('.', 'p')
+            return f'mixed-tom0-{tom0}-tom1-{tom1}'
+        return 'reactive' if self.tom_order < 0 else f'tom-{self.tom_order}'
+
+    def apply(self, config: ExperimentConfig) -> ExperimentConfig:
+        resolved = config.clone()
+        resolved.tom_order = self.tom_order if self.tom_order is not None else 0
+        resolved.tom_proportions = self.tom_proportions
+        resolved.tom_options = None
+        return resolved
+
+
+def _seed(value: Any, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f'{key} must be a nonnegative integer')
+    return value
+
+
+def _seed_range(value: Any) -> tuple[int, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError('seed_range must be [START, END]')
+    start, end = (_seed(item, 'seed_range endpoint') for item in value)
+    if end < start:
+        raise ValueError('seed_range requires START <= END')
+    return start, end
+
+
+def _tom_options(value: Any) -> list[ToMOption]:
+    if not isinstance(value, list) or not value:
+        raise ValueError('tom_options must be a nonempty list')
+    options = []
+    for item in value:
+        if not isinstance(item, dict) or len(item) != 1:
+            raise ValueError('Each tom_options entry needs exactly one of tom_order or tom_proportions')
+        if 'tom_order' in item:
+            options.append(ToMOption(tom_order=parse_tom_order(item['tom_order'])))
+        elif 'tom_proportions' in item:
+            if not isinstance(item['tom_proportions'], dict):
+                raise ValueError('tom_proportions must be a mapping')
+            options.append(ToMOption(tom_proportions=ToMProportions(**item['tom_proportions'])))
+        else:
+            raise ValueError('Unknown tom_options entry; use tom_order or tom_proportions')
+    labels = [option.label for option in options]
+    if len(labels) != len(set(labels)):
+        raise ValueError('tom_options contains duplicate settings')
+    return options
+
+
+@dataclass(frozen=True)
 class SpawnRegion:
     minimum: tuple[float, float]
     maximum: tuple[float, float]
@@ -71,6 +132,10 @@ class ExperimentConfig:
     height: float = 100.0
     tom_order: int = 0
     tom_proportions: ToMProportions | None = None
+    tom_options: list[ToMOption] | None = None
+    seed: int | None = None
+    seed_range: tuple[int, int] | None = None
+    score_trace: bool = True
     agent_count: int = 400
     agent_radius: float = 0.3
     desired_speed: float = 2.0
@@ -91,6 +156,10 @@ class ExperimentConfig:
             height=self.height,
             tom_order=self.tom_order,
             tom_proportions=self.tom_proportions,
+            tom_options=list(self.tom_options) if self.tom_options is not None else None,
+            seed=self.seed,
+            seed_range=self.seed_range,
+            score_trace=self.score_trace,
             agent_count=self.agent_count,
             agent_radius=self.agent_radius,
             desired_speed=self.desired_speed,
@@ -117,6 +186,10 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     perception = raw.get('perception') or {}
     obstacles = raw.get('obstacles') or {}
     proportions = raw.get('tom_proportions')
+    if 'seed' in raw and 'seed_range' in raw:
+        raise ValueError('Specify either seed or seed_range in the config')
+    if not isinstance(raw.get('score_trace', True), bool):
+        raise ValueError('score_trace must be true or false')
     exits: list[SideExit] = []
     for item in raw.get('exits') or []:
         if 'side' in item:
@@ -152,6 +225,10 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
         height=float(raw.get('height', 100)),
         tom_order=parse_tom_order(raw.get('tom_order', 0)),
         tom_proportions=ToMProportions(**proportions) if proportions is not None else None,
+        tom_options=_tom_options(raw['tom_options']) if 'tom_options' in raw else None,
+        seed=_seed(raw['seed'], 'seed') if 'seed' in raw else None,
+        seed_range=_seed_range(raw['seed_range']) if 'seed_range' in raw else None,
+        score_trace=raw.get('score_trace', True),
         agent_count=int(agents.get('count', raw.get('agent_count', 400))),
         agent_radius=float(agents.get('radius', 0.3)),
         desired_speed=float(agents.get('desired_speed', 2.0)),
@@ -181,6 +258,14 @@ def save_experiment(config: ExperimentConfig, path: str | Path) -> Path:
         'height': config.height,
         'tom_order': None if config.tom_order < 0 else config.tom_order,
         **({'tom_proportions': asdict(config.tom_proportions)} if config.tom_proportions else {}),
+        **({'tom_options': [
+            {'tom_order': None if option.tom_order < 0 else option.tom_order}
+            if option.tom_order is not None else {'tom_proportions': asdict(option.tom_proportions)}
+            for option in config.tom_options
+        ]} if config.tom_options is not None else {}),
+        **({'seed': config.seed} if config.seed is not None else {}),
+        **({'seed_range': list(config.seed_range)} if config.seed_range is not None else {}),
+        'score_trace': config.score_trace,
         'agents': {
             'count': config.agent_count,
             'radius': config.agent_radius,

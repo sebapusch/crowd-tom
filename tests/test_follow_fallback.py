@@ -34,6 +34,12 @@ class FollowFallbackTests(unittest.TestCase):
                 direction = env._desired_directions(env._pos, 1 / 60)
                 self.assertEqual(env._chosen_exit[0], -1)
                 np.testing.assert_allclose(direction[0], [1.0, 0.0])
+                stats = env.tom0_metrics()
+                self.assertGreaterEqual(stats['following'], 1)
+                self.assertEqual(
+                    stats['following'] + stats['wandering'] + sum(stats['selected_exits']),
+                    stats['n'],
+                )
 
     def test_wanders_when_no_other_agent_is_visible(self):
         agents = [make_agent(0, (0.0, 0.0)), make_agent(1, (1.0, 0.0))]
@@ -43,6 +49,8 @@ class FollowFallbackTests(unittest.TestCase):
 
         direction = env._desired_directions(env._pos, 1 / 60)
         np.testing.assert_allclose(direction[0], [0.0, 1.0])
+        self.assertEqual(env.tom0_metrics()['wandering'], 2)
+        self.assertEqual(env.tom0_metrics()['following'], 0)
 
 
 if __name__ == '__main__':

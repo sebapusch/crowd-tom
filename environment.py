@@ -12,8 +12,11 @@ if TYPE_CHECKING:
 
 from exit import Exit
 from perception import pairwise_visible_mask, unit_rows, visible_exit_mask
-from tom0 import ToM0Params, headings_from_beliefs, uncertainty, utilities
-from tom1 import ToM1Params, ToM1Reasoner
+from tom0 import (
+    ToM0Params, distance_penalty, headings_from_beliefs, occupancy_penalty,
+    uncertainty, utilities,
+)
+from tom1 import ToM1Params, ToM1Reasoner, demand_penalty
 
 
 # Newtons
@@ -22,6 +25,15 @@ COMPRESSION_COEFF = 1.2e5
 SLIDING_COEFF = 2.4e5
 MIN_DIST = 1e-12
 DEFAULT_TEST_SEED = 1000
+AGENT_TYPES = ('reactive', 'tom0', 'tom1')
+
+
+def _type_masks(orders: np.ndarray) -> dict[str, np.ndarray]:
+    return {
+        'reactive': orders < 0,
+        'tom0': (orders >= 0) & (orders != 1),
+        'tom1': orders == 1,
+    }
 
 
 @dataclass(frozen=True)
@@ -75,18 +87,39 @@ class Environment:
         self._belief_mu = np.zeros((len(agents), 0, 2), dtype=float)
         self._chosen_exit = np.full(len(agents), -1, dtype=int)
         self._tom1_changed = np.zeros(len(agents), dtype=bool)
+        self._following = np.zeros(len(agents), dtype=bool)
+        self._wandering = np.zeros(len(agents), dtype=bool)
+        self._switches_step_by_type = {agent_type: 0 for agent_type in AGENT_TYPES}
+        self._switches_total_by_type = {agent_type: 0 for agent_type in AGENT_TYPES}
+        self._agent_seconds_by_type = {agent_type: 0.0 for agent_type in AGENT_TYPES}
+        self.score_trace_enabled = False
+        self.score_trace_agent_id: int | None = None
+        self.score_trace_rows: list[dict] = []
         self.initial_agent_count = len(agents)
         self.escaped_by_exit: list[int] = []
         self.evacuation_time: float | None = None
         self.evacuation_times: dict[int, float] = {}
+        self.escaped_by_type = {agent_type: 0 for agent_type in AGENT_TYPES}
+        self.escaped_by_exit_by_type = {agent_type: [] for agent_type in AGENT_TYPES}
+        self._departed_exit_step_by_type = {agent_type: [] for agent_type in AGENT_TYPES}
         self.peak_memory_guided = 0
         self.blind_committed_s = 0.0
         self.peak_commit_distance = 0.0
         self._pack_agents()
+        initial_masks = _type_masks(self._agent_tom_orders if self.has_assigned_tom_orders else self._effective_orders())
+        self._initial_by_type = {agent_type: int(mask.sum()) for agent_type, mask in initial_masks.items()}
+        self._peak_memory_guided_by_type = {agent_type: 0 for agent_type in AGENT_TYPES}
+        self._peak_commit_distance_by_type = {agent_type: 0.0 for agent_type in AGENT_TYPES}
+        self._blind_committed_s_by_type = {agent_type: 0.0 for agent_type in AGENT_TYPES}
+        self._evacuation_time_by_type = {agent_type: None for agent_type in AGENT_TYPES}
 
     def add_exit(self, exit_: Exit) -> None:
         self.exits.append(exit_)
         self.escaped_by_exit.append(0)
+        for counts in self.escaped_by_exit_by_type.values():
+            counts.append(0)
+        for counts in self._departed_exit_step_by_type.values():
+            counts.append(0)
         self._ensure_beliefs()
 
     def add_sign(self, sign: ExitSign) -> None:
@@ -101,6 +134,9 @@ class Environment:
         n = len(self.agents)
         if n == 0:
             return
+        self._departed_exit_step_by_type = {
+            agent_type: [0] * len(self.exits) for agent_type in AGENT_TYPES
+        }
 
         pos = self._pos
         vel = self._vel
@@ -112,6 +148,10 @@ class Environment:
         B = self._B
 
         desired_direction = self._desired_directions(pos, dt)
+        metric_orders = self._agent_tom_orders if self.has_assigned_tom_orders else self._effective_orders()
+        for agent_type, mask in _type_masks(metric_orders).items():
+            self._switches_total_by_type[agent_type] += self._switches_step_by_type[agent_type]
+            self._agent_seconds_by_type[agent_type] += int(mask.sum()) * dt
         np.copyto(self._heading, desired_direction)
         f_drive = masses[:, None] * (desired_speeds[:, None] * desired_direction - vel) / taus[:, None]
         f_other = self._social_forces(pos, vel, radii, A, B)
@@ -124,6 +164,8 @@ class Environment:
         pos += vel * dt
 
         claimed = np.zeros(n, dtype=bool)
+        metric_orders = self._agent_tom_orders if self.has_assigned_tom_orders else self._effective_orders()
+        type_masks = _type_masks(metric_orders)
         for j, exit_position in enumerate(self.exits):
             hit = exit_position.is_crossed_many(previous_position, pos) & ~claimed
             crossing_time = self._t + dt
@@ -133,6 +175,11 @@ class Environment:
                     self.evacuation_times[agent.idx] = crossing_time
             if j < len(self.escaped_by_exit):
                 self.escaped_by_exit[j] += int(hit.sum())
+                for agent_type, mask in type_masks.items():
+                    count = int((hit & mask).sum())
+                    self.escaped_by_type[agent_type] += count
+                    self.escaped_by_exit_by_type[agent_type][j] += count
+                    self._departed_exit_step_by_type[agent_type][j] += count
             claimed |= hit
 
         if not np.any(claimed):
@@ -147,12 +194,19 @@ class Environment:
         self._belief_mu = self._belief_mu[keep]
         self._chosen_exit = self._chosen_exit[keep]
         self._tom1_changed = self._tom1_changed[keep]
+        self._following = self._following[keep]
+        self._wandering = self._wandering[keep]
         if self._seen_exits.shape[0] == keep.shape[0]:
             self._seen_exits = self._seen_exits[keep]
         if self._signed_exits.shape[0] == keep.shape[0]:
             self._signed_exits = self._signed_exits[keep]
         self._pack_agents()
         self._t += dt
+        for agent_type in AGENT_TYPES:
+            if (self._initial_by_type[agent_type] > 0
+                    and self.escaped_by_type[agent_type] == self._initial_by_type[agent_type]
+                    and self._evacuation_time_by_type[agent_type] is None):
+                self._evacuation_time_by_type[agent_type] = self._t
         if len(self.agents) == 0 and self.evacuation_time is None:
             self.evacuation_time = self._t
         self._update_tom0_peaks(dt)
@@ -169,10 +223,26 @@ class Environment:
         self.peak_memory_guided = max(self.peak_memory_guided, stats['memory_guided'])
         self.peak_commit_distance = max(self.peak_commit_distance, stats['max_commit_distance'])
         self.blind_committed_s += stats['blind_committed'] * dt
+        for agent_type, values in stats['by_type'].items():
+            self._peak_memory_guided_by_type[agent_type] = max(
+                self._peak_memory_guided_by_type[agent_type], values['memory_guided'],
+            )
+            self._peak_commit_distance_by_type[agent_type] = max(
+                self._peak_commit_distance_by_type[agent_type], values['max_commit_distance'],
+            )
+            self._blind_committed_s_by_type[agent_type] += values['blind_committed'] * dt
+            values['peak_memory_guided'] = self._peak_memory_guided_by_type[agent_type]
+            values['peak_commit_distance'] = self._peak_commit_distance_by_type[agent_type]
+            values['blind_committed_s'] = self._blind_committed_s_by_type[agent_type]
+        stats['peak_memory_guided'] = self.peak_memory_guided
+        stats['peak_commit_distance'] = self.peak_commit_distance
+        stats['blind_committed_s'] = self.blind_committed_s
+        self._last_metrics = stats
 
     def tom0_metrics(self) -> dict:
         n = len(self.agents)
         orders = self._agent_tom_orders if self.has_assigned_tom_orders else self._effective_orders()
+        type_masks = _type_masks(orders)
         e = len(self.exits)
         seeing_exit = 0
         seeing_sign = 0
@@ -183,6 +253,36 @@ class Environment:
         mean_uncertainty = 0.0
         mean_age = 0.0
         max_commit_distance = 0.0
+        by_type = {
+            agent_type: {
+                'remaining': int(mask.sum()),
+                'escaped': self.escaped_by_type[agent_type],
+                'escaped_by_exit': list(self.escaped_by_exit_by_type[agent_type]),
+                'departed_exits_step': list(self._departed_exit_step_by_type[agent_type]),
+                'seeing_exit': 0, 'seeing_sign': 0, 'with_belief': 0,
+                'memory_guided': 0, 'no_belief': int(mask.sum()),
+                'tom1_changed': int((self._tom1_changed & mask).sum()),
+                'following': int((self._following & mask).sum()),
+                'wandering': int((self._wandering & mask).sum()),
+                'selected_exits': [int(((self._chosen_exit == j) & mask).sum()) for j in range(e)],
+                'switches_step': self._switches_step_by_type[agent_type],
+                'switches_total': self._switches_total_by_type[agent_type],
+                'agent_seconds': self._agent_seconds_by_type[agent_type],
+                'switch_rate': (
+                    self._switches_total_by_type[agent_type] / self._agent_seconds_by_type[agent_type]
+                    if self._agent_seconds_by_type[agent_type] > 0 else 0.0
+                ),
+                'blind_committed': 0, 'mean_uncertainty': 0.0,
+                'mean_age': 0.0, 'max_commit_distance': 0.0,
+                'peak_memory_guided': self._peak_memory_guided_by_type[agent_type],
+                'peak_commit_distance': self._peak_commit_distance_by_type[agent_type],
+                'blind_committed_s': self._blind_committed_s_by_type[agent_type],
+                'evacuation_time': self._evacuation_time_by_type[agent_type],
+            }
+            for agent_type, mask in type_masks.items()
+        }
+        for values in by_type.values():
+            values['initial'] = values['remaining'] + values['escaped']
         if n > 0 and e > 0 and self._has_belief.shape == (n, e):
             seen_exits = self._seen_exits if self._seen_exits.shape == (n, e) else np.zeros((n, e), dtype=bool)
             signed_exits = self._signed_exits if self._signed_exits.shape == (n, e) else np.zeros((n, e), dtype=bool)
@@ -192,6 +292,11 @@ class Environment:
             no_belief = n - with_belief
             blind_committed = int((~current_cue.any(axis=1) & has_any).sum())
             valid = (self._chosen_exit >= 0) & (self._chosen_exit < e)
+            for agent_type, mask in type_masks.items():
+                values = by_type[agent_type]
+                values['with_belief'] = int((has_any & mask).sum())
+                values['no_belief'] = values['remaining'] - values['with_belief']
+                values['blind_committed'] = int((~current_cue.any(axis=1) & has_any & mask).sum())
             if np.any(valid):
                 rows = np.flatnonzero(valid)
                 chosen = self._chosen_exit[rows]
@@ -205,6 +310,16 @@ class Environment:
                 mean_uncertainty = float(uncertainty(age, self.tom0.uncertainty_time).mean())
                 commit_dist = np.linalg.norm(self._belief_mu[rows, chosen] - self._pos[rows], axis=1)
                 max_commit_distance = float(commit_dist.max())
+                for agent_type, mask in type_masks.items():
+                    selected = mask[rows]
+                    values = by_type[agent_type]
+                    values['seeing_exit'] = int((directly_seen & selected).sum())
+                    values['seeing_sign'] = int((sign_seen & selected).sum())
+                    values['memory_guided'] = int((~directly_seen & ~sign_seen & selected).sum())
+                    if np.any(selected):
+                        values['mean_age'] = float(age[selected].mean())
+                        values['mean_uncertainty'] = float(uncertainty(age[selected], self.tom0.uncertainty_time).mean())
+                        values['max_commit_distance'] = float(commit_dist[selected].max())
         escaped = int(sum(self.escaped_by_exit))
         return {
             'n': n,
@@ -214,11 +329,25 @@ class Environment:
             'initial': self.initial_agent_count,
             'escaped': escaped,
             'escaped_by_exit': list(self.escaped_by_exit),
+            'departed_exits_step': [
+                sum(self._departed_exit_step_by_type[agent_type][j] for agent_type in AGENT_TYPES)
+                for j in range(e)
+            ],
             'seeing_exit': seeing_exit,
             'seeing_sign': seeing_sign,
             'with_belief': with_belief,
             'memory_guided': memory_guided,
             'tom1_changed': int(self._tom1_changed.sum()),
+            'following': int(self._following.sum()),
+            'wandering': int(self._wandering.sum()),
+            'selected_exits': [int((self._chosen_exit == j).sum()) for j in range(e)],
+            'switches_step': sum(self._switches_step_by_type.values()),
+            'switches_total': sum(self._switches_total_by_type.values()),
+            'agent_seconds': sum(self._agent_seconds_by_type.values()),
+            'switch_rate': (
+                sum(self._switches_total_by_type.values()) / sum(self._agent_seconds_by_type.values())
+                if sum(self._agent_seconds_by_type.values()) > 0 else 0.0
+            ),
             'blind_committed': blind_committed,
             'no_belief': no_belief,
             'mean_uncertainty': mean_uncertainty,
@@ -229,6 +358,7 @@ class Environment:
             'blind_committed_s': self.blind_committed_s,
             't': self._t,
             'evacuation_time': self.evacuation_time,
+            'by_type': by_type,
         }
 
     def get_visible_agents(self, agent: Agent) -> list[Agent]:
@@ -267,6 +397,8 @@ class Environment:
             self._belief_mu = np.zeros((0, len(self.exits), 2), dtype=float)
             self._chosen_exit = np.empty(0, dtype=int)
             self._tom1_changed = np.empty(0, dtype=bool)
+            self._following = np.empty(0, dtype=bool)
+            self._wandering = np.empty(0, dtype=bool)
             return
         self._pos = np.array([agent.position for agent in self.agents], dtype=float)
         self._agent_tom_orders = np.array([
@@ -327,9 +459,13 @@ class Environment:
     def _desired_directions(self, pos: np.ndarray, dt: float) -> np.ndarray:
         n = len(pos)
         if not self.exits:
+            self._following = np.zeros(n, dtype=bool)
+            self._wandering = np.zeros(n, dtype=bool)
+            self._switches_step_by_type = {agent_type: 0 for agent_type in AGENT_TYPES}
             return self._heading.copy()
 
         self._ensure_beliefs()
+        previous_choice = self._chosen_exit.copy()
         params = self.tom0
         orders = self._effective_orders()
         seen_exits = np.zeros((n, len(self.exits)), dtype=bool)
@@ -400,8 +536,9 @@ class Environment:
             base_scores = utilities(
                 distance, occupancy, age, self._has_belief, params,
             )
-            tom_heading, tom1_chosen, _demand = self.tom1.choose(
-                ids=np.array([agent.idx for agent in self.agents], dtype=int),
+            agent_ids = np.array([agent.idx for agent in self.agents], dtype=int)
+            tom_heading, tom1_chosen, demand = self.tom1.choose(
+                ids=agent_ids,
                 pos=pos,
                 vel=self._vel,
                 mu=self._belief_mu,
@@ -421,22 +558,90 @@ class Environment:
             chosen[use_tom1] = tom1_chosen[use_tom1]
             personal |= use_tom1
             self._tom1_changed = use_tom1 & (tom1_chosen != tom_chosen)
+            if self.score_trace_enabled:
+                self._record_score_trace(
+                    agent_ids, orders, tom_chosen, tom1_chosen,
+                    distance, occupancy, age, demand,
+                )
         self._chosen_exit = chosen
+        switched = (previous_choice >= 0) & (chosen >= 0) & (previous_choice != chosen)
+        metric_orders = self._agent_tom_orders if self.has_assigned_tom_orders else orders
+        self._switches_step_by_type = {
+            agent_type: int((switched & mask).sum())
+            for agent_type, mask in _type_masks(metric_orders).items()
+        }
 
-        fallback = self._follow_or_wander(pos, dt, visible_agents)
+        fallback, can_follow = self._follow_or_wander(pos, dt, visible_agents)
+        self._following = ~personal & can_follow
+        self._wandering = ~personal & ~can_follow
         return np.where(personal[:, None], direction, fallback)
+
+    def _record_score_trace(
+            self, agent_ids: np.ndarray, orders: np.ndarray,
+            tom0_chosen: np.ndarray, tom1_chosen: np.ndarray,
+            distance: np.ndarray, occupancy: np.ndarray,
+            age: np.ndarray, demand: np.ndarray,
+    ) -> None:
+        eligible = (
+            (orders == 1) & (self._has_belief.sum(axis=1) >= 2)
+            & (tom0_chosen >= 0) & (tom1_chosen >= 0)
+        )
+        candidates = np.flatnonzero(eligible)
+        if len(candidates) == 0:
+            return
+        candidate = int(candidates[np.argmin(agent_ids[candidates])])
+        candidate_id = int(agent_ids[candidate])
+        if self.score_trace_agent_id is None or candidate_id < self.score_trace_agent_id:
+            self.score_trace_agent_id = candidate_id
+            self.score_trace_rows.clear()
+        if not eligible[agent_ids == self.score_trace_agent_id].any():
+            return
+        row_index = int(np.flatnonzero(agent_ids == self.score_trace_agent_id)[0])
+        selected_exit = int(tom1_chosen[row_index])
+        tom0_exit = int(tom0_chosen[row_index])
+        params = self.tom0
+        demand_params = self.tom1.params
+
+        def terms(exit_index: int) -> dict[str, float]:
+            values = {
+                'distance': float(params.w_distance * distance_penalty(
+                    distance[row_index, exit_index], params.distance_scale,
+                )),
+                'occupancy': float(params.w_occupancy * occupancy_penalty(
+                    occupancy[row_index, exit_index], params.occupancy_half_density,
+                )),
+                'uncertainty': float(params.w_uncertainty * uncertainty(
+                    age[row_index, exit_index], params.uncertainty_time,
+                )),
+                'demand': float(demand_params.demand_weight * demand_penalty(
+                    demand[row_index, exit_index], demand_params.demand_half_count,
+                )),
+            }
+            values['base_total'] = values['distance'] + values['occupancy'] + values['uncertainty']
+            values['total'] = values['base_total'] + values['demand']
+            return values
+
+        selected = terms(selected_exit)
+        baseline = terms(tom0_exit)
+        self.score_trace_rows.append({
+            'status': 'decision', 't': self._t, 'agent_id': self.score_trace_agent_id,
+            'selected_exit': selected_exit, 'tom0_exit': tom0_exit,
+            **{f'selected_{key}': value for key, value in selected.items()},
+            **{f'alternative_{key}': value for key, value in baseline.items()},
+            **{f'delta_{key}': selected[key] - baseline[key] for key in selected},
+        })
 
     def _follow_or_wander(
             self,
             pos: np.ndarray,
             dt: float,
             visible: np.ndarray,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         n = len(pos)
         turn = self._rng.normal(0.0, self.wander_turn * dt, size=n)
         wander = self._rotate_headings(self._heading, turn)
         if n < 2:
-            return wander
+            return wander, np.zeros(n, dtype=bool)
 
         offset = pos[None, :, :] - pos[:, None, :]
         dist = np.linalg.norm(offset, axis=2)
@@ -445,7 +650,7 @@ class Environment:
         nearest = np.argmin(dist, axis=1)
         can_follow = np.isfinite(dist[np.arange(n), nearest])
         follow = unit_rows(pos[nearest] - pos)
-        return np.where(can_follow[:, None], follow, wander)
+        return np.where(can_follow[:, None], follow, wander), can_follow
 
     @staticmethod
     def _rotate_headings(headings: np.ndarray, angles: np.ndarray) -> np.ndarray:
