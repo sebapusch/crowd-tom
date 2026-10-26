@@ -1,0 +1,44 @@
+# Train platform with the hallway on the top edge.
+# Bounding box 100 m by 60 m, the same as the room scenes. North is y = 0.
+# The window scales by width, so this size shows the full height, like the rooms.
+# Hallway: x = [0, 20], y = [0, 10] (10 m wide, centered at y = 5).
+# Platform: x = [20, 100]. Depth is 80 m because the doors stay on the east wall.
+# Four east-boundary doors, each 3 m wide. Crossing one means boarding.
+# The mouth at x = 20, y = [0, 10] stays open. The platform's left edge is walled from y = 10 to y = 60.
+# The upper hallway edge is the outer north wall, so it is not repeated as an interior wall.
+# The west boundary wall is the back of the hallway.
+# Preview policy is homogeneous ToM-0. tom_options lists the later study compositions.
+name: train-top-hallway
+width: 100
+height: 60
+tom_order: 0
+agents:
+  count: 80
+  radius: 0.3
+  desired_speed: 2.0
+  spawn_region:
+    min: [2, 1]
+    max: [17, 9]
+perception:
+  view_range: 40
+  fov_deg: 360
+exits:
+  - {side: east, center: 7.5, width: 3, name: door_0}
+  - {side: east, center: 22.5, width: 3, name: door_1}
+  - {side: east, center: 37.5, width: 3, name: door_2}
+  - {side: east, center: 52.5, width: 3, name: door_3}
+signs:
+  - {position: [20, 2], exit_index: 0}
+  - {position: [20, 4], exit_index: 1}
+  - {position: [20, 6], exit_index: 2}
+  - {position: [20, 8], exit_index: 3}
+obstacles:
+  walls:
+    - {start: [0, 10], end: [20, 10]}
+    - {start: [20, 10], end: [20, 60]}
+  circles: []
+tom_options:
+  - {tom_order: reactive}
+  - {tom_order: 0}
+  - {tom_order: 1}
+  - {tom_proportions: {tom0: 0.5, tom1: 0.5}}
